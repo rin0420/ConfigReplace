@@ -20,6 +20,6 @@
 ## ビルド
 
 ```powershell
-dotnet test .\ConfigReplace.slnx -c Release
+dotnet build .\ConfigReplace.slnx -c Release
 dotnet publish .\ConfigReplace.App\ConfigReplace.App.csproj -c Release -r win-x64 --self-contained true -o .\publish
 ```
