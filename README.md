@@ -2,6 +2,10 @@
 
 フォルダー構成をプロファイル単位で切り替える、Windows向けの小型ツールです。
 
+## 配布
+
+[ConfigReplace.zipをダウンロード](https://github.com/rin0420/ConfigReplace/releases/download/v1.0.0/ConfigReplace.zip)
+
 ## 使い方
 
 1. ［新規］を押す
