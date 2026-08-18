@@ -9,7 +9,7 @@
 3. 配置するフォルダーをエクスプローラーからドロップする
 4. ［保存］後、プレビューして切り替える
 
-取り込んだフォルダーは`Profiles`内へ保存され、元フォルダーには依存しません。
+取り込んだフォルダーはEXEと同じフォルダーの`Profiles`内へ保存され、元フォルダーには依存しません。
 
 ## 動作環境
 
@@ -21,5 +21,5 @@
 
 ```powershell
 dotnet build .\ConfigReplace.slnx -c Release
-dotnet publish .\ConfigReplace.App\ConfigReplace.App.csproj -c Release -r win-x64 --self-contained true -o .\publish
+dotnet publish .\src\ConfigReplace.App\ConfigReplace.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o .\dist\ConfigReplace
 ```

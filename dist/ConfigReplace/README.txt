@@ -1,0 +1,4 @@
+ConfigReplace
+
+ConfigReplace.exeを起動してください。
+プロファイルデータは、このEXEと同じフォルダーのProfilesに保存されます。
