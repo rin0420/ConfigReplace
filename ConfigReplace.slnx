@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="ConfigReplace.App/ConfigReplace.App.csproj" />
+  <Project Path="ConfigReplace.Tests/ConfigReplace.Tests.csproj" />
+</Solution>

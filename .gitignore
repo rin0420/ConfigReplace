@@ -1,0 +1,15 @@
+bin/
+obj/
+publish/
+publish-*/
+.dotnet*/
+TestResults/
+Backups/
+Profiles/
+SimpleProfiles/
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.log
