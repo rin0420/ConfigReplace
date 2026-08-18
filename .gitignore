@@ -6,7 +6,6 @@ publish-*/
 TestResults/
 Backups/
 Profiles/
-SimpleProfiles/
 .vs/
 .vscode/
 .idea/
