@@ -3,7 +3,7 @@ using ConfigReplace.Models;
 namespace ConfigReplace.Services;
 
 /// <summary>
-/// プロファイルに登録されたフォルダー群を、配置先ごとにまとめて切り替えるサービスです。
+/// プロファイルに登録されたフォルダーの内容を、配置先へ上書きするサービスです。
 /// </summary>
 public interface IProfileFolderSetSwitchService
 {
@@ -16,16 +16,5 @@ public interface IProfileFolderSetSwitchService
     Task<OperationResult> ExecuteAsync(
         FolderSetSwitchPlan plan,
         IProgress<OperationProgress>? progress = null,
-        CancellationToken cancellationToken = default);
-
-    Task<IReadOnlyList<FolderSetHistoryItem>> GetHistoryAsync(CancellationToken cancellationToken = default);
-
-    Task<OperationResult> RestoreAsync(
-        FolderSetHistoryItem history,
-        IProgress<OperationProgress>? progress = null,
-        CancellationToken cancellationToken = default);
-
-    Task<ActiveProfileState> DetectActiveProfileAsync(
-        ProfilesDocument document,
         CancellationToken cancellationToken = default);
 }
