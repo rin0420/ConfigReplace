@@ -4,7 +4,7 @@
 
 ## 配布
 
-[ConfigReplace.zipをダウンロード](https://github.com/rin0420/ConfigReplace/releases/download/v1.0.0/ConfigReplace.zip)
+[ConfigReplace.zipをダウンロード](https://github.com/rin0420/ConfigReplace/releases/download/v1.1.0/ConfigReplace.zip)
 
 ## 使い方
 
