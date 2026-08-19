@@ -1,4 +1,5 @@
 using ConfigReplace.Models;
+using ConfigReplace.Services;
 
 namespace ConfigReplace.Views;
 
@@ -38,7 +39,7 @@ public sealed class FolderProfileEditorWindow : Form
         MaximizeBox = false;
         MinimizeBox = false;
 
-        _instruction.Text = "プロファイル名と配置先を入力し、エクスプローラーからフォルダを「配置するフォルダ」セルへドロップしてください。保存時にProfilesへコピーします。";
+        _instruction.Text = "プロファイル名と配置先を入力し、エクスプローラーからフォルダを「配置するフォルダ」セルへドロップしてください。保存時にProfilesへコピーします。プロファイル内のフォルダー名は重複できません。";
         _instruction.AutoSize = true;
         _instruction.Location = new Point(10, 12);
         _instruction.ForeColor = SystemColors.GrayText;
@@ -228,9 +229,15 @@ public sealed class FolderProfileEditorWindow : Form
                 ShowInputError($"配置先が不正です: {exception.Message}");
                 return;
             }
-            if (!keys.Add($"{fullTarget}\0{folderName}"))
+            try { ProfileStore.ValidateFolderName(folderName); }
+            catch (InvalidDataException exception)
             {
-                ShowInputError($"同じ配置先に同名フォルダが重複しています: {Path.Combine(fullTarget, folderName)}");
+                ShowInputError(exception.Message);
+                return;
+            }
+            if (!keys.Add(folderName))
+            {
+                ShowInputError($"プロファイル内で同じフォルダー名は登録できません: {folderName}");
                 return;
             }
             folders.Add(new ProfileFolderInput

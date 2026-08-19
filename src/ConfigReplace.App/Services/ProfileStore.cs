@@ -83,6 +83,19 @@ public sealed class ProfileStore
         return GetContainedPath(profileName);
     }
 
+    /// <summary>
+    /// 新形式の保存先です。プロファイル配下にはフォルダー名をそのまま配置します。
+    /// </summary>
+    public string GetProfileFolderPath(FolderProfile profile, string folderName)
+        => GetProfileFolderPath(profile.Name, folderName);
+
+    public string GetProfileFolderPath(string profileName, string folderName)
+    {
+        ValidateProfileName(profileName);
+        ValidateFolderName(folderName);
+        return GetContainedPath(profileName, folderName);
+    }
+
     public void MigrateProfileDirectory(FolderProfile profile)
     {
         var legacyPath = GetLegacyProfileDirectoryPath(profile.Id);
@@ -109,43 +122,72 @@ public sealed class ProfileStore
         try { Directory.Delete(legacyPath); } catch { }
     }
 
-    public void CommitStagedSnapshots(FolderProfile profile, string stagingId, string? previousProfileName = null)
+    /// <summary>
+    /// staging フォルダーを、プロファイル名直下の新形式へ移します。
+    /// 編集時は既存のプロファイル保存先を一時的に退避し、保存完了後に削除します。
+    /// </summary>
+    public void CommitStagedFolders(FolderProfile profile, string stagingId, string? previousProfileName = null)
     {
-        var stagingPath = GetLegacyProfileDirectoryPath(stagingId);
+        var stagingPath = GetProfileDirectoryPath(stagingId);
         var destination = GetProfileDirectoryPath(profile.Name);
+        string? previousPath = null;
+        string? displacedPath = null;
+        var stagedMoved = false;
 
-        if (!string.IsNullOrWhiteSpace(previousProfileName)
-            && !string.Equals(previousProfileName, profile.Name, StringComparison.OrdinalIgnoreCase))
+        try
         {
-            var previousPath = GetProfileDirectoryPath(previousProfileName);
-            if (Directory.Exists(destination) || File.Exists(destination))
+            if (!string.IsNullOrWhiteSpace(previousProfileName))
+            {
+                previousPath = GetProfileDirectoryPath(previousProfileName);
+                var samePath = string.Equals(previousPath, destination, StringComparison.OrdinalIgnoreCase);
+                if (!samePath && (Directory.Exists(destination) || File.Exists(destination)))
+                {
+                    throw new IOException($"プロファイル名の保存先が既に使用されています: {destination}");
+                }
+
+                if (Directory.Exists(previousPath))
+                {
+                    displacedPath = previousPath + $".configreplace-old-{Guid.NewGuid():N}";
+                    Directory.Move(previousPath, displacedPath);
+                }
+                else if (File.Exists(previousPath))
+                {
+                    throw new IOException($"プロファイルの保存先がファイルです: {previousPath}");
+                }
+            }
+            else if (Directory.Exists(destination) || File.Exists(destination))
             {
                 throw new IOException($"プロファイル名の保存先が既に使用されています: {destination}");
             }
-            if (Directory.Exists(previousPath))
-            {
-                Directory.Move(previousPath, destination);
-            }
-        }
-        else if (string.IsNullOrWhiteSpace(previousProfileName)
-            && (Directory.Exists(destination) || File.Exists(destination)))
-        {
-            throw new IOException($"プロファイル名の保存先が既に使用されています: {destination}");
-        }
 
-        if (!Directory.Exists(stagingPath)) return;
-        Directory.CreateDirectory(destination);
-        foreach (var entry in Directory.EnumerateFileSystemEntries(stagingPath))
-        {
-            var target = Path.Combine(destination, Path.GetFileName(entry));
-            if (File.Exists(target) || Directory.Exists(target))
+            if (!Directory.Exists(stagingPath))
             {
-                throw new IOException($"プロファイル保存先に同名のスナップショットがあります: {target}");
+                throw new DirectoryNotFoundException($"プロファイルの一時保存先がありません: {stagingPath}");
             }
-            if (Directory.Exists(entry)) Directory.Move(entry, target);
-            else File.Move(entry, target);
+
+            Directory.Move(stagingPath, destination);
+            stagedMoved = true;
+
+            if (displacedPath is not null && Directory.Exists(displacedPath))
+            {
+                FileSystemUtilities.DeleteDirectoryTree(displacedPath);
+            }
         }
-        try { Directory.Delete(stagingPath); } catch { }
+        catch
+        {
+            if (stagedMoved && Directory.Exists(destination))
+            {
+                FileSystemUtilities.DeleteDirectoryTree(destination);
+            }
+
+            if (displacedPath is not null && previousPath is not null && Directory.Exists(displacedPath)
+                && !Directory.Exists(previousPath) && !File.Exists(previousPath))
+            {
+                Directory.Move(displacedPath, previousPath);
+            }
+
+            throw;
+        }
     }
     public void ValidateWritable()
     {
@@ -202,9 +244,20 @@ public sealed class ProfileStore
         return path;
     }
 
-    private string GetContainedPath(string segment)
+    public static void ValidateFolderName(string value)
     {
-        var path = Path.GetFullPath(Path.Combine(ProfilesRoot, segment));
+        ValidateSegment(value, nameof(value));
+        if (value.EndsWith(' ') || value.EndsWith('.') || value.Length > 120)
+        {
+            throw new InvalidDataException("フォルダー名は末尾の空白・ピリオドを含めず、120文字以内で指定してください。");
+        }
+    }
+
+    private string GetContainedPath(params string[] segments)
+    {
+        var path = ProfilesRoot;
+        foreach (var segment in segments) path = Path.Combine(path, segment);
+        path = Path.GetFullPath(path);
         if (!FileSystemUtilities.IsSameOrChildPath(path, ProfilesRoot))
         {
             throw new InvalidDataException("プロファイルの保存先がProfilesフォルダー外を参照しています。");
