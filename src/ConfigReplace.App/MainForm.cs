@@ -22,6 +22,7 @@ public sealed class MainForm : Form
     private readonly DataGridView _history = CreateGrid();
     private readonly TextBox _historyDetail = CreateReadOnlyTextBox();
     private readonly Button _refreshButton = CreateButton("履歴を更新", 92);
+    private readonly Button _compareButton = CreateButton("ファイル差分...", 104);
     private readonly Button _restoreButton = CreateButton("選択履歴を復元", 126);
     private readonly ToolStripStatusLabel _status = new() { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
     private readonly ToolStripProgressBar _progress = new() { Width = 120, Minimum = 0, Maximum = 100 };
@@ -125,6 +126,8 @@ public sealed class MainForm : Form
         });
         _refreshButton.Dock = DockStyle.Right;
         header.Controls.Add(_refreshButton);
+        _compareButton.Dock = DockStyle.Right;
+        header.Controls.Add(_compareButton);
 
         ConfigureHistoryGrid();
         _history.Dock = DockStyle.Fill;
@@ -171,6 +174,7 @@ public sealed class MainForm : Form
         {
             if (!_updatingHistory) _viewModel.SelectedHistory = _history.CurrentRow?.DataBoundItem as FolderSetHistoryItem;
         };
+        _history.CellDoubleClick += (_, _) => Execute(_viewModel.CompareHistoryCommand);
         _newButton.Click += (_, _) => Execute(_viewModel.CreateProfileCommand);
         _editButton.Click += (_, _) => Execute(_viewModel.EditProfileCommand);
         _duplicateButton.Click += (_, _) => Execute(_viewModel.DuplicateProfileCommand);
@@ -180,6 +184,7 @@ public sealed class MainForm : Form
         _cancelButton.Click += (_, _) => Execute(_viewModel.CancelCommand);
         _refreshButton.Click += (_, _) => Execute(_viewModel.RefreshHistoryCommand);
         _restoreButton.Click += (_, _) => Execute(_viewModel.RestoreCommand);
+        _compareButton.Click += (_, _) => Execute(_viewModel.CompareHistoryCommand);
         ObserveCommand(_viewModel.CreateProfileCommand);
         ObserveCommand(_viewModel.EditProfileCommand);
         ObserveCommand(_viewModel.DuplicateProfileCommand);
@@ -189,6 +194,7 @@ public sealed class MainForm : Form
         ObserveCommand(_viewModel.CancelCommand);
         ObserveCommand(_viewModel.RefreshHistoryCommand);
         ObserveCommand(_viewModel.RestoreCommand);
+        ObserveCommand(_viewModel.CompareHistoryCommand);
     }
 
     private static void Execute(System.Windows.Input.ICommand command)
@@ -270,6 +276,7 @@ public sealed class MainForm : Form
         _cancelButton.Enabled = _viewModel.CancelCommand.CanExecute(null);
         _refreshButton.Enabled = _viewModel.RefreshHistoryCommand.CanExecute(null);
         _restoreButton.Enabled = _viewModel.RestoreCommand.CanExecute(null);
+        _compareButton.Enabled = _viewModel.CompareHistoryCommand.CanExecute(null);
     }
 
     private static Button CreateButton(string text, int width) => new()
