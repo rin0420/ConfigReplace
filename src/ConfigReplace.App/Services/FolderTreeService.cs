@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -93,47 +94,83 @@ public sealed class FolderTreeService
         IProgress<OperationProgress>? progress,
         CancellationToken cancellationToken)
     {
-        var source = await ScanAsync(sourcePath, cancellationToken);
-        if (!source.Exists)
+        var sourceRoot = Path.GetFullPath(sourcePath);
+        if (!Directory.Exists(sourceRoot))
         {
             throw new DirectoryNotFoundException($"コピー元フォルダーがありません: {sourcePath}");
         }
+        EnsureDirectoryIsSafe(sourceRoot);
 
         var root = Path.GetFullPath(snapshotRoot);
+        if (FileSystemUtilities.IsSameOrChildPath(root, sourceRoot))
+        {
+            throw new InvalidOperationException("コピー先をコピー元フォルダーの内側には作成できません。");
+        }
+
         var contentRoot = Path.Combine(root, "content");
         Directory.CreateDirectory(contentRoot);
-        foreach (var relativeDirectory in source.Directories)
-        {
-            Directory.CreateDirectory(Path.Combine(contentRoot, relativeDirectory));
-        }
+        var directories = new List<string>();
+        var sourceFiles = new List<(string FullPath, string RelativePath)>();
+        var pending = new Stack<string>();
+        pending.Push(sourceRoot);
 
-        for (var index = 0; index < source.Files.Count; index++)
+        while (pending.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var entry = source.Files[index];
-            progress?.Report(new OperationProgress(index, source.Files.Count, entry.RelativePath, "スナップショット作成中"));
-            var destination = Path.Combine(contentRoot, entry.RelativePath);
-            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-            File.Copy(Path.Combine(source.RootPath, entry.RelativePath), destination, true);
-            File.SetAttributes(destination, entry.Attributes);
+            var directory = pending.Pop();
+            IEnumerable<string> childDirectories;
+            IEnumerable<string> childFiles;
+            try
+            {
+                childDirectories = Directory.EnumerateDirectories(directory).ToArray();
+                childFiles = Directory.EnumerateFiles(directory).ToArray();
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                throw new IOException($"フォルダーを読み取れません: {directory}", exception);
+            }
+
+            foreach (var childDirectory in childDirectories)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                EnsureDirectoryIsSafe(childDirectory);
+                directories.Add(FileSystemUtilities.SafeRelativePath(sourceRoot, childDirectory));
+                pending.Push(childDirectory);
+            }
+
+            foreach (var file in childFiles)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                EnsureFileIsSafe(file);
+                var relativePath = FileSystemUtilities.SafeRelativePath(sourceRoot, file);
+                sourceFiles.Add((file, relativePath));
+            }
         }
 
+        directories.Sort(StringComparer.OrdinalIgnoreCase);
+        sourceFiles.Sort((left, right) => StringComparer.OrdinalIgnoreCase.Compare(left.RelativePath, right.RelativePath));
+        var files = new List<SnapshotFileEntry>(sourceFiles.Count);
+        for (var index = 0; index < sourceFiles.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var sourceFile = sourceFiles[index];
+            var destination = Path.Combine(contentRoot, sourceFile.RelativePath);
+            files.Add(await CopyFileAndHashAsync(sourceFile.FullPath, sourceFile.RelativePath, destination, cancellationToken));
+            progress?.Report(new OperationProgress(index + 1, sourceFiles.Count, sourceFile.RelativePath, "スナップショット作成中"));
+        }
+
+        var treeHash = ComputeTreeHash(directories, files);
         var manifest = new SnapshotManifest
         {
             CapturedAt = DateTimeOffset.Now,
-            SourcePath = includeSourceMetadata ? source.RootPath : string.Empty,
-            TreeHash = source.TreeHash,
-            Directories = source.Directories,
-            Files = source.Files
+            SourcePath = includeSourceMetadata ? sourceRoot : string.Empty,
+            TreeHash = treeHash,
+            Directories = directories,
+            Files = files
         };
         await SaveManifestAsync(Path.Combine(root, "snapshot.json"), manifest, cancellationToken);
-        var copied = await ScanAsync(contentRoot, cancellationToken);
-        if (!copied.Exists || !string.Equals(copied.TreeHash, source.TreeHash, StringComparison.Ordinal))
-        {
-            throw new IOException("スナップショット作成中にコピー元が変更されました。");
-        }
 
-        progress?.Report(new OperationProgress(source.Files.Count, source.Files.Count, string.Empty, "スナップショット作成完了"));
+        progress?.Report(new OperationProgress(files.Count, files.Count, string.Empty, "スナップショット作成完了"));
         return manifest;
     }
 
@@ -158,6 +195,22 @@ public sealed class FolderTreeService
         if (!content.Exists || !string.Equals(content.TreeHash, manifest.TreeHash, StringComparison.Ordinal))
         {
             throw new InvalidDataException($"スナップショットの内容が破損しています: {snapshotRoot}");
+        }
+
+        var manifestDirectories = manifest.Directories.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray();
+        var contentDirectories = content.Directories.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray();
+        if (!manifestDirectories.SequenceEqual(contentDirectories, StringComparer.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException($"スナップショットのフォルダー一覧が不正です: {snapshotRoot}");
+        }
+
+        var manifestFiles = manifest.Files.ToDictionary(value => value.RelativePath, StringComparer.OrdinalIgnoreCase);
+        if (manifestFiles.Count != content.Files.Count
+            || content.Files.Any(file => !manifestFiles.TryGetValue(file.RelativePath, out var expected)
+                || expected.Length != file.Length
+                || !string.Equals(expected.Hash, file.Hash, StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException($"スナップショットのファイル一覧が不正です: {snapshotRoot}");
         }
 
         return manifest;
@@ -224,11 +277,84 @@ public sealed class FolderTreeService
         string snapshotRoot,
         CancellationToken cancellationToken = default)
     {
-        var manifest = await LoadAndValidateSnapshotAsync(snapshotRoot, cancellationToken);
+        var manifestPath = Path.Combine(snapshotRoot, "snapshot.json");
+        if (!File.Exists(manifestPath))
+        {
+            throw new InvalidDataException($"スナップショットのmanifestがありません: {snapshotRoot}");
+        }
+
+        SnapshotManifest manifest;
+        await using (var stream = new FileStream(manifestPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, true))
+        {
+            manifest = await JsonSerializer.DeserializeAsync<SnapshotManifest>(stream, new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                PropertyNameCaseInsensitive = true
+            }, cancellationToken) ?? throw new InvalidDataException("スナップショットのmanifestが空です。");
+        }
         if (string.IsNullOrEmpty(manifest.SourcePath)) return false;
         manifest.SourcePath = string.Empty;
         await SaveManifestAsync(Path.Combine(snapshotRoot, "snapshot.json"), manifest, cancellationToken);
         return true;
+    }
+
+    private static async Task<SnapshotFileEntry> CopyFileAndHashAsync(
+        string source,
+        string relativePath,
+        string destination,
+        CancellationToken cancellationToken)
+    {
+        var sourceInfo = new FileInfo(source);
+        var expectedLength = sourceInfo.Length;
+        var attributes = File.GetAttributes(source);
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+
+        await using var input = new FileStream(
+            source,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            1024 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await using var output = new FileStream(
+            destination,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            1024 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = ArrayPool<byte>.Shared.Rent(1024 * 1024);
+        long copiedLength = 0;
+        try
+        {
+            int read;
+            while ((read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)) > 0)
+            {
+                hash.AppendData(buffer, 0, read);
+                await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                copiedLength += read;
+            }
+            await output.FlushAsync(cancellationToken);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+
+        if (copiedLength != expectedLength || new FileInfo(source).Length != expectedLength)
+        {
+            throw new IOException($"コピー元がコピー中に変更されました: {source}");
+        }
+
+        File.SetAttributes(destination, attributes);
+        return new SnapshotFileEntry
+        {
+            RelativePath = relativePath,
+            Length = copiedLength,
+            Hash = Convert.ToHexString(hash.GetHashAndReset()),
+            Attributes = attributes
+        };
     }
 
     public static string ComputeTreeHash(IEnumerable<string> directories, IEnumerable<SnapshotFileEntry> files)

@@ -69,7 +69,7 @@ public sealed class ProfileFolderSetSwitchService(
 
                 foreach (var snapshot in desired.Values)
                 {
-                    var snapshotPath = GetSnapshotAbsolutePath(profile.Id, snapshot);
+                    var snapshotPath = GetSnapshotAbsolutePath(profile, snapshot);
                     await treeService.LoadAndValidateSnapshotAsync(snapshotPath, cancellationToken);
                 }
 
@@ -174,7 +174,7 @@ public sealed class ProfileFolderSetSwitchService(
                 var desired = entries.First(item => string.Equals(item.TargetPath, entry.TargetPath, StringComparison.OrdinalIgnoreCase)).Desired!;
                 var stagePath = CreateUniqueSiblingPath(entry.TargetPath, $".configreplace-stage-{runId}");
                 stagePaths[entry.TargetPath] = stagePath;
-                await treeService.CopySnapshotContentAsync(GetSnapshotAbsolutePath(plan.Profile.Id, desired), stagePath, null, cancellationToken);
+                    await treeService.CopySnapshotContentAsync(GetSnapshotAbsolutePath(plan.Profile, desired), stagePath, null, cancellationToken);
             }
 
             for (var index = 0; index < manifest.Entries.Count; index++)
@@ -237,7 +237,6 @@ public sealed class ProfileFolderSetSwitchService(
                     continue;
                 }
 
-                var validation = await ValidateManifestBackupsAsync(manifest, directory, cancellationToken);
                 items.Add(new FolderSetHistoryItem
                 {
                     ManifestPath = path,
@@ -246,8 +245,10 @@ public sealed class ProfileFolderSetSwitchService(
                     OperationKind = manifest.OperationKind,
                     Status = manifest.Status,
                     FolderCount = manifest.Entries.Count,
-                    CanRestore = manifest.Status == FolderSwitchStatus.Completed && validation.Count == 0,
-                    ValidationMessage = string.Join(Environment.NewLine, validation)
+                    CanRestore = manifest.Status == FolderSwitchStatus.Completed,
+                    ValidationMessage = manifest.Status == FolderSwitchStatus.Completed
+                        ? "復元時に現在の配置先とバックアップを再検証します。"
+                        : string.Empty
                 });
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
@@ -403,6 +404,19 @@ public sealed class ProfileFolderSetSwitchService(
         }
 
         var managedByRoot = BuildManagedFolderNames(document, null);
+        var currentByRoot = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var rootEntry in managedByRoot)
+        {
+            var current = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var folderName in rootEntry.Value)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var tree = await treeService.ScanAsync(Path.Combine(rootEntry.Key, folderName), cancellationToken);
+                current[folderName] = tree.TreeHash;
+            }
+            currentByRoot[rootEntry.Key] = current;
+        }
+
         foreach (var profile in document.Profiles)
         {
             var desiredByRoot = NormalizeProfileGroups(profile, null);
@@ -414,9 +428,9 @@ public sealed class ProfileFolderSetSwitchService(
                     : new Dictionary<string, ProfileFolderSnapshot>(StringComparer.OrdinalIgnoreCase);
                 foreach (var folderName in rootEntry.Value)
                 {
-                    var tree = await treeService.ScanAsync(Path.Combine(rootEntry.Key, folderName), cancellationToken);
+                    var currentHash = currentByRoot[rootEntry.Key][folderName];
                     var expected = desired.TryGetValue(folderName, out var snapshot) ? snapshot.TreeHash : "MISSING";
-                    if (!string.Equals(tree.TreeHash, expected, StringComparison.Ordinal))
+                    if (!string.Equals(currentHash, expected, StringComparison.Ordinal))
                     {
                         matched = false;
                         break;
@@ -449,7 +463,7 @@ public sealed class ProfileFolderSetSwitchService(
 
             foreach (var snapshot in group.DesiredFolders)
             {
-                await treeService.LoadAndValidateSnapshotAsync(GetSnapshotAbsolutePath(plan.Profile.Id, snapshot), cancellationToken);
+                await treeService.LoadAndValidateSnapshotAsync(GetSnapshotAbsolutePath(plan.Profile, snapshot), cancellationToken);
             }
         }
     }
@@ -532,8 +546,8 @@ public sealed class ProfileFolderSetSwitchService(
         return result;
     }
 
-    private string GetSnapshotAbsolutePath(string profileId, ProfileFolderSnapshot snapshot)
-        => profileStore.GetSnapshotPath(profileId, snapshot.Id);
+    private string GetSnapshotAbsolutePath(FolderProfile profile, ProfileFolderSnapshot snapshot)
+        => profileStore.GetSnapshotPath(profile, snapshot.Id);
 
     private async Task EnsureCurrentTreeHashAsync(string path, string expectedHash, CancellationToken cancellationToken, List<string>? conflicts = null)
     {
@@ -662,8 +676,10 @@ public sealed class ProfileFolderSetSwitchService(
     private string GetBackupPath(string runDirectory, string relativePath)
     {
         var root = Path.GetFullPath(runDirectory);
+        if (string.IsNullOrWhiteSpace(relativePath)) throw new InvalidDataException("履歴のバックアップパスが空です。");
         var path = Path.GetFullPath(Path.Combine(root, relativePath));
-        if (!FileSystemUtilities.IsSameOrChildPath(path, root)) throw new InvalidDataException("履歴のバックアップパスが不正です。");
+        if (string.Equals(path, root, StringComparison.OrdinalIgnoreCase)
+            || !FileSystemUtilities.IsSameOrChildPath(path, root)) throw new InvalidDataException("履歴のバックアップパスが不正です。");
         return path;
     }
 
@@ -679,8 +695,18 @@ public sealed class ProfileFolderSetSwitchService(
 
     private static void ValidateTargetParent(string targetRoot)
     {
-        var parent = Directory.GetParent(targetRoot)?.FullName;
-        if (parent is null || !HasSafeExistingParent(targetRoot)) throw new InvalidDataException("配置先の親フォルダーを安全に確認できません。");
+        var normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(targetRoot));
+        var parent = Directory.GetParent(normalized)?.FullName;
+        if (parent is null)
+        {
+            if (!Directory.Exists(normalized) || !HasSafeDirectory(normalized))
+            {
+                throw new InvalidDataException("配置先の親フォルダーを安全に確認できません。");
+            }
+            return;
+        }
+
+        if (!HasSafeExistingParent(normalized)) throw new InvalidDataException("配置先の親フォルダーを安全に確認できません。");
         if (!Directory.Exists(parent))
         {
             try { Directory.CreateDirectory(parent); }
@@ -712,6 +738,18 @@ public sealed class ProfileFolderSetSwitchService(
             current = parent;
         }
         return true;
+    }
+
+    private static bool HasSafeDirectory(string path)
+    {
+        try
+        {
+            return !File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private static string CreateUniqueSiblingPath(string targetPath, string suffix) => targetPath + suffix;

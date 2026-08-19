@@ -1,5 +1,4 @@
 using ConfigReplace.Models;
-using ConfigReplace.Services;
 
 namespace ConfigReplace.Views;
 
@@ -7,6 +6,7 @@ public sealed class ProfileFolderInput
 {
     public required string TargetRootPath { get; init; }
     public required string FolderName { get; init; }
+    public string? SourcePath { get; init; }
     public string? StagedSnapshotPath { get; init; }
     public ProfileFolderSnapshot? ExistingSnapshot { get; init; }
 }
@@ -21,11 +21,8 @@ public sealed class FolderProfileEditorWindow : Form
 {
     private readonly DataGridView _rows = new();
     private readonly Label _instruction = new();
-    private readonly FolderTreeService _treeService = new();
-    private readonly string _temporaryRoot = Path.Combine(Path.GetTempPath(), "ConfigReplace", "ProfileImports", Guid.NewGuid().ToString("N"));
     private readonly string? _existingProfileName;
     private DataGridViewCell? _dropCell;
-    private bool _importing;
 
     public FolderProfileEditorWindow(FolderProfile? profile = null, string title = "プロファイル作成")
     {
@@ -40,7 +37,7 @@ public sealed class FolderProfileEditorWindow : Form
         MaximizeBox = false;
         MinimizeBox = false;
 
-        _instruction.Text = "配置先を入力し、エクスプローラーからフォルダを「配置するフォルダ」セルへドロップしてください。";
+        _instruction.Text = "配置先を入力し、エクスプローラーからフォルダを「配置するフォルダ」セルへドロップしてください。保存時にProfilesへコピーします。";
         _instruction.AutoSize = true;
         _instruction.Location = new Point(10, 12);
         _instruction.ForeColor = SystemColors.GrayText;
@@ -105,7 +102,6 @@ public sealed class FolderProfileEditorWindow : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) DeleteTemporaryImports();
         base.Dispose(disposing);
     }
 
@@ -130,7 +126,6 @@ public sealed class FolderProfileEditorWindow : Form
     private void RemoveSelectedRow()
     {
         if (_rows.CurrentRow is not { IsNewRow: false } row) return;
-        DeleteStagedImport(row.Tag as FolderImportReference);
         _rows.Rows.Remove(row);
     }
 
@@ -147,11 +142,11 @@ public sealed class FolderProfileEditorWindow : Form
         SetDropHighlight(cell);
     }
 
-    private async void RowsOnDragDrop(object? sender, DragEventArgs e)
+    private void RowsOnDragDrop(object? sender, DragEventArgs e)
     {
         var cell = GetDropCell(e);
         ClearDropHighlight();
-        if (_importing || cell is null || !TryGetSingleFolder(e.Data, out var sourcePath)) return;
+        if (cell is null || !TryGetSingleFolder(e.Data, out var sourcePath)) return;
 
         var row = _rows.Rows[cell.RowIndex];
         if (row.IsNewRow)
@@ -160,30 +155,9 @@ public sealed class FolderProfileEditorWindow : Form
             row = _rows.Rows[index];
         }
 
-        var snapshotPath = Path.Combine(_temporaryRoot, Guid.NewGuid().ToString("N"));
-        _importing = true;
-        _rows.Enabled = false;
-        _instruction.Text = $"「{Path.GetFileName(Path.TrimEndingDirectorySeparator(sourcePath))}」を取り込んでいます...";
-        try
-        {
-            Directory.CreateDirectory(_temporaryRoot);
-            await _treeService.CaptureSelfContainedAsync(sourcePath, snapshotPath);
-            DeleteStagedImport(row.Tag as FolderImportReference);
-            row.Tag = FolderImportReference.FromStaged(snapshotPath);
-            row.Cells[1].Value = Path.GetFileName(Path.TrimEndingDirectorySeparator(sourcePath));
-            _instruction.Text = "取り込みました。元フォルダを変更しても、保存するプロファイルには影響しません。";
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException)
-        {
-            DeleteDirectory(snapshotPath);
-            _instruction.Text = "フォルダを「配置するフォルダ」セルへドロップしてください。";
-            MessageBox.Show(this, $"フォルダを取り込めませんでした。\n\n{exception.Message}", "取り込みエラー", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-        finally
-        {
-            _rows.Enabled = true;
-            _importing = false;
-        }
+        row.Tag = FolderImportReference.FromSource(sourcePath);
+        row.Cells[1].Value = Path.GetFileName(Path.TrimEndingDirectorySeparator(sourcePath));
+        _instruction.Text = "フォルダを登録しました。保存時にProfilesへコピーします。";
     }
 
     private DataGridViewCell? GetDropCell(DragEventArgs e)
@@ -228,7 +202,6 @@ public sealed class FolderProfileEditorWindow : Form
 
     private void Save(object? sender, EventArgs e)
     {
-        if (_importing) return;
         var folders = new List<ProfileFolderInput>();
         var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (DataGridViewRow row in _rows.Rows)
@@ -258,6 +231,7 @@ public sealed class FolderProfileEditorWindow : Form
             {
                 TargetRootPath = fullTarget,
                 FolderName = folderName,
+                SourcePath = source.SourcePath,
                 StagedSnapshotPath = source.StagedSnapshotPath,
                 ExistingSnapshot = source.ExistingSnapshot
             });
@@ -277,26 +251,12 @@ public sealed class FolderProfileEditorWindow : Form
     private void ShowInputError(string message)
         => MessageBox.Show(this, message, "入力確認", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
-    private void DeleteTemporaryImports() => DeleteDirectory(_temporaryRoot);
-
-    private static void DeleteStagedImport(FolderImportReference? source)
-    {
-        if (source?.StagedSnapshotPath is not null) DeleteDirectory(source.StagedSnapshotPath);
-    }
-
-    private static void DeleteDirectory(string path)
-    {
-        if (!Directory.Exists(path)) return;
-        var allowedRoot = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "ConfigReplace", "ProfileImports"));
-        var fullPath = Path.GetFullPath(path);
-        if (!FileSystemUtilities.IsSameOrChildPath(fullPath, allowedRoot)) return;
-        try { FileSystemUtilities.DeleteDirectoryTree(fullPath); } catch { }
-    }
-
     private sealed class FolderImportReference
     {
+        public string? SourcePath { get; init; }
         public string? StagedSnapshotPath { get; init; }
         public ProfileFolderSnapshot? ExistingSnapshot { get; init; }
+        public static FolderImportReference FromSource(string path) => new() { SourcePath = path };
         public static FolderImportReference FromStaged(string path) => new() { StagedSnapshotPath = path };
         public static FolderImportReference FromExisting(ProfileFolderSnapshot snapshot) => new() { ExistingSnapshot = snapshot };
     }

@@ -18,6 +18,7 @@ public sealed class MainViewModel : ObservableObject
     private readonly ProfileStore _profileStore;
     private readonly FolderTreeService _treeService;
     private readonly IProfileFolderSetSwitchService _switchService;
+    private readonly HistoryDiffService _historyDiffService;
     private readonly string _backupRoot;
     private ProfilesDocument _document = new();
     private FolderSetSwitchPlan? _switchPlan;
@@ -38,6 +39,7 @@ public sealed class MainViewModel : ObservableObject
         _treeService = new FolderTreeService();
         _backupRoot = Path.Combine(appRoot, "Backups");
         _switchService = new ProfileFolderSetSwitchService(_profileStore, _treeService, _backupRoot);
+        _historyDiffService = new HistoryDiffService(_treeService, _backupRoot);
 
         CreateProfileCommand = new AsyncRelayCommand(CreateProfileAsync, () => !IsBusy);
         EditProfileCommand = new AsyncRelayCommand(EditProfileAsync, () => !IsBusy && SelectedProfile is not null);
@@ -47,6 +49,7 @@ public sealed class MainViewModel : ObservableObject
         SwitchCommand = new AsyncRelayCommand(SwitchAsync, () => !IsBusy && _switchPlan?.IsValid == true);
         RefreshHistoryCommand = new AsyncRelayCommand(RefreshHistoryAsync, () => !IsBusy);
         RestoreCommand = new AsyncRelayCommand(RestoreAsync, () => !IsBusy && SelectedHistory?.CanRestore == true);
+        CompareHistoryCommand = new AsyncRelayCommand(CompareHistory, () => !IsBusy && SelectedHistory is not null && SelectedHistory.FolderCount > 0);
         CancelCommand = new RelayCommand(Cancel, () => IsBusy);
         _ = InitializeAsync();
     }
@@ -63,6 +66,7 @@ public sealed class MainViewModel : ObservableObject
     public AsyncRelayCommand SwitchCommand { get; }
     public AsyncRelayCommand RefreshHistoryCommand { get; }
     public AsyncRelayCommand RestoreCommand { get; }
+    public AsyncRelayCommand CompareHistoryCommand { get; }
     public RelayCommand CancelCommand { get; }
 
     public FolderProfile? SelectedProfile
@@ -145,18 +149,18 @@ public sealed class MainViewModel : ObservableObject
     private async Task InitializeAsync()
     {
         BeginOperation("プロファイルを読み込んでいます。");
+        var startBackgroundRefresh = false;
         try
         {
             _document = await _profileStore.LoadAsync();
             var migrated = MigrateLegacySlotProfiles();
-            var sanitized = await SanitizeStoredSourceMetadataAsync();
-            if (migrated || sanitized) await _profileStore.SaveAsync(_document);
+            foreach (var profile in _document.Profiles) _profileStore.MigrateProfileDirectory(profile);
+            if (migrated) await _profileStore.SaveAsync(_document);
             SyncCollections();
-            await RefreshActiveStateAsync();
-            await RefreshHistoryCoreAsync();
             StatusText = Profiles.Count == 0
                 ? "［新規］から、配置先を指定してフォルダーを取り込んでください。"
                 : "プロファイルを選択してください。";
+            startBackgroundRefresh = true;
         }
         catch (Exception exception)
         {
@@ -166,6 +170,28 @@ public sealed class MainViewModel : ObservableObject
         finally
         {
             EndOperation();
+            if (startBackgroundRefresh) _ = RefreshInitialStateAsync();
+        }
+    }
+
+    private async Task RefreshInitialStateAsync()
+    {
+        try
+        {
+            if (IsBusy) return;
+            await RefreshActiveStateAsync(onlyWhenIdle: true);
+            if (IsBusy) return;
+            await RefreshHistoryCoreAsync();
+            if (!IsBusy)
+            {
+                StatusText = Profiles.Count == 0
+                    ? "［新規］から、配置先を指定してフォルダーを取り込んでください。"
+                    : "プロファイルを選択してください。";
+            }
+        }
+        catch (Exception exception)
+        {
+            DetailText = exception.Message;
         }
     }
 
@@ -178,13 +204,13 @@ public sealed class MainViewModel : ObservableObject
         var profile = new FolderProfile
         {
             Id = Guid.NewGuid().ToString("N"),
-            Name = dialog.Result.Name,
+            Name = CreateUniqueProfileName(dialog.Result.Name),
             CreatedAt = DateTimeOffset.Now,
             UpdatedAt = DateTimeOffset.Now
         };
         try
         {
-            profile.Groups = await CaptureProfileFoldersAsync(profile.Id, dialog.Result.Folders);
+            profile.Groups = await CaptureProfileFoldersAsync(profile, dialog.Result.Folders);
             _document.SchemaVersion = 2;
             _document.Profiles.Add(profile);
             await _profileStore.SaveAsync(_document, _cancellation!.Token);
@@ -199,7 +225,7 @@ public sealed class MainViewModel : ObservableObject
         {
             StatusText = "プロファイルを作成できませんでした。";
             DetailText = exception.Message;
-            DeleteProfileDirectory(profile.Id);
+            DeleteProfileDirectory(profile);
         }
         finally
         {
@@ -215,9 +241,11 @@ public sealed class MainViewModel : ObservableObject
         if (dialog.ShowDialog(Form.ActiveForm) != DialogResult.OK || dialog.Result is null) return;
 
         BeginOperation("プロファイルを更新しています。");
+        var previousName = edited.Name;
         try
         {
-            var groups = await CaptureProfileFoldersAsync(edited.Id, dialog.Result.Folders);
+            var newName = dialog.Result.Name;
+            var groups = await CaptureProfileFoldersAsync(edited, dialog.Result.Folders, previousName, newName);
             edited.Name = dialog.Result.Name;
             edited.UpdatedAt = DateTimeOffset.Now;
             edited.Groups = groups;
@@ -247,6 +275,17 @@ public sealed class MainViewModel : ObservableObject
         if (SelectedProfile is null) return;
         var name = TextInputDialog.Show(Form.ActiveForm, "プロファイル複製", "新しいプロファイル名:", SelectedProfile.Name + " コピー");
         if (string.IsNullOrWhiteSpace(name)) return;
+        try { _profileStore.GetProfileDirectoryPath(name.Trim()); }
+        catch (InvalidDataException exception)
+        {
+            MessageBox.Show(Form.ActiveForm, exception.Message, "プロファイル名を確認してください", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        if (_document.Profiles.Any(profile => string.Equals(profile.Name, name.Trim(), StringComparison.OrdinalIgnoreCase)))
+        {
+            MessageBox.Show(Form.ActiveForm, "同じ名前のプロファイルが既にあります。別の名前を指定してください。", "プロファイル名を確認してください", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
 
         BeginOperation("プロファイルを複製しています。");
         var source = SelectedProfile;
@@ -268,14 +307,14 @@ public sealed class MainViewModel : ObservableObject
                     foreach (var snapshot in group.Folders)
                     {
                         var destination = _profileStore.GetSnapshotPath(tempId, snapshot.Id);
-                        var sourcePath = _profileStore.GetSnapshotPath(source.Id, snapshot.Id);
+                        var sourcePath = _profileStore.GetSnapshotPath(source, snapshot.Id);
                         await _treeService.CloneSnapshotAsync(sourcePath, destination, _cancellation!.Token);
                         await _treeService.RemoveSourceMetadataAsync(destination, _cancellation!.Token);
                         groupCopy.Folders.Add(new ProfileFolderSnapshot
                         {
                             Id = snapshot.Id,
                             FolderName = snapshot.FolderName,
-                            SnapshotRelativePath = Path.Combine(copy.Id, snapshot.Id),
+                            SnapshotRelativePath = Path.Combine(copy.Name, snapshot.Id),
                             SourcePath = string.Empty,
                             TreeHash = snapshot.TreeHash,
                             FileCount = snapshot.FileCount,
@@ -284,7 +323,7 @@ public sealed class MainViewModel : ObservableObject
                     }
                     copy.Groups.Add(groupCopy);
                 }
-                MoveProfileDirectory(tempId, copy.Id);
+                _profileStore.CommitStagedSnapshots(copy, tempId);
             }
             finally
             {
@@ -301,7 +340,7 @@ public sealed class MainViewModel : ObservableObject
         {
             StatusText = "プロファイルを複製できませんでした。";
             DetailText = exception.Message;
-            DeleteProfileDirectory(copy.Id);
+            DeleteProfileDirectory(copy);
         }
         finally
         {
@@ -318,7 +357,7 @@ public sealed class MainViewModel : ObservableObject
         if (result != DialogResult.Yes) return;
         var deleted = SelectedProfile;
         _document.Profiles.Remove(deleted);
-        DeleteProfileDirectory(deleted.Id);
+        DeleteProfileDirectory(deleted);
         SyncCollections();
         _ = SaveDocumentAsync("プロファイルを削除しました。", true);
     }
@@ -417,8 +456,22 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private async Task<List<ProfileFolderGroup>> CaptureProfileFoldersAsync(string profileId, IReadOnlyList<ProfileFolderInput> inputs)
+    private Task CompareHistory()
     {
+        if (SelectedHistory is null) return Task.CompletedTask;
+        using var dialog = new HistoryDiffWindow(_historyDiffService, SelectedHistory);
+        dialog.ShowDialog(Form.ActiveForm);
+        return Task.CompletedTask;
+    }
+
+    private async Task<List<ProfileFolderGroup>> CaptureProfileFoldersAsync(
+        FolderProfile profile,
+        IReadOnlyList<ProfileFolderInput> inputs,
+        string? previousProfileName = null,
+        string? destinationProfileName = null)
+    {
+        var profileId = profile.Id;
+        var destinationName = destinationProfileName ?? profile.Name;
         var tempId = profileId + ".staging-" + Guid.NewGuid().ToString("N");
         var groups = new Dictionary<string, ProfileFolderGroup>(StringComparer.OrdinalIgnoreCase);
         try
@@ -434,10 +487,21 @@ public sealed class MainViewModel : ObservableObject
 
                 var snapshotId = Guid.NewGuid().ToString("N");
                 var snapshotPath = _profileStore.GetSnapshotPath(tempId, snapshotId);
+                SnapshotManifest? manifest = null;
                 if (input.ExistingSnapshot is not null)
                 {
-                    var existingPath = _profileStore.GetSnapshotPath(profileId, input.ExistingSnapshot.Id);
-                    await _treeService.CloneSnapshotAsync(existingPath, snapshotPath, _cancellation!.Token);
+                    if (!Directory.Exists(_profileStore.GetSnapshotPath(profile, input.ExistingSnapshot.Id)))
+                    {
+                        throw new DirectoryNotFoundException($"保存済みスナップショットがありません: {input.FolderName}");
+                    }
+                }
+                else if (!string.IsNullOrWhiteSpace(input.SourcePath))
+                {
+                    manifest = await _treeService.CaptureSelfContainedAsync(
+                        input.SourcePath,
+                        snapshotPath,
+                        CreateProgress(),
+                        _cancellation!.Token);
                 }
                 else if (!string.IsNullOrWhiteSpace(input.StagedSnapshotPath))
                 {
@@ -447,21 +511,31 @@ public sealed class MainViewModel : ObservableObject
                 {
                     throw new InvalidOperationException($"配置するフォルダーが取り込まれていません: {input.FolderName}");
                 }
-                await _treeService.RemoveSourceMetadataAsync(snapshotPath, _cancellation!.Token);
-                var manifest = await _treeService.LoadAndValidateSnapshotAsync(snapshotPath, _cancellation!.Token);
+                if (input.ExistingSnapshot is null && manifest is null)
+                {
+                    await _treeService.RemoveSourceMetadataAsync(snapshotPath, _cancellation!.Token);
+                    manifest = await _treeService.LoadAndValidateSnapshotAsync(snapshotPath, _cancellation!.Token);
+                }
                 group.Folders.Add(new ProfileFolderSnapshot
                 {
-                    Id = snapshotId,
+                    Id = input.ExistingSnapshot?.Id ?? snapshotId,
                     FolderName = input.FolderName,
-                    SnapshotRelativePath = Path.Combine(profileId, snapshotId),
+                    SnapshotRelativePath = Path.Combine(destinationName, input.ExistingSnapshot?.Id ?? snapshotId),
                     SourcePath = string.Empty,
-                    TreeHash = manifest.TreeHash,
-                    FileCount = manifest.Files.Count,
-                    TotalBytes = manifest.Files.Sum(file => file.Length)
+                    TreeHash = input.ExistingSnapshot?.TreeHash ?? manifest!.TreeHash,
+                    FileCount = input.ExistingSnapshot?.FileCount ?? manifest!.Files.Count,
+                    TotalBytes = input.ExistingSnapshot?.TotalBytes ?? manifest!.Files.Sum(file => file.Length)
                 });
             }
 
-            MoveProfileDirectory(tempId, profileId);
+            var destinationProfile = new FolderProfile
+            {
+                Id = profile.Id,
+                Name = destinationName,
+                CreatedAt = profile.CreatedAt,
+                UpdatedAt = profile.UpdatedAt
+            };
+            _profileStore.CommitStagedSnapshots(destinationProfile, tempId, previousProfileName);
             return groups.Values.ToList();
         }
         finally
@@ -486,9 +560,10 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private async Task RefreshActiveStateAsync()
+    private async Task RefreshActiveStateAsync(bool onlyWhenIdle = false)
     {
         var state = await Task.Run(() => _switchService.DetectActiveProfileAsync(_document, _cancellation?.Token ?? CancellationToken.None));
+        if (onlyWhenIdle && IsBusy) return;
         ActiveStateText = state.Message;
     }
 
@@ -561,7 +636,7 @@ public sealed class MainViewModel : ObservableObject
                 {
                     Id = snapshot.SlotId,
                     FolderName = folderName,
-                    SnapshotRelativePath = Path.Combine(profile.Id, snapshot.SlotId),
+                    SnapshotRelativePath = Path.Combine(profile.Name, snapshot.SlotId),
                     SourcePath = string.Empty,
                     TreeHash = snapshot.TreeHash,
                     FileCount = snapshot.FileCount,
@@ -573,21 +648,6 @@ public sealed class MainViewModel : ObservableObject
         _document.Slots.Clear();
         _document.SchemaVersion = 2;
         return true;
-    }
-
-    private async Task<bool> SanitizeStoredSourceMetadataAsync()
-    {
-        var changed = false;
-        foreach (var profile in _document.Profiles)
-        {
-            foreach (var snapshot in profile.Groups.SelectMany(group => group.Folders))
-            {
-                var path = _profileStore.GetSnapshotPath(profile.Id, snapshot.Id);
-                if (!Directory.Exists(path)) continue;
-                changed |= await _treeService.RemoveSourceMetadataAsync(path);
-            }
-        }
-        return changed;
     }
 
     private void BeginOperation(string message)
@@ -654,25 +714,22 @@ public sealed class MainViewModel : ObservableObject
         SwitchCommand.RaiseCanExecuteChanged();
         RefreshHistoryCommand.RaiseCanExecuteChanged();
         RestoreCommand.RaiseCanExecuteChanged();
+        CompareHistoryCommand.RaiseCanExecuteChanged();
         CancelCommand.RaiseCanExecuteChanged();
     }
 
-    private void MoveProfileDirectory(string sourceId, string destinationId)
+    private string CreateUniqueProfileName(string requestedName)
     {
-        var source = Path.Combine(_profileStore.ProfilesRoot, sourceId);
-        var destination = Path.Combine(_profileStore.ProfilesRoot, destinationId);
-        var old = destination + ".old-" + Guid.NewGuid().ToString("N");
-        try
+        var baseName = requestedName.Trim();
+        _profileStore.GetProfileDirectoryPath(baseName);
+        var candidate = baseName;
+        var suffix = 2;
+        while (_document.Profiles.Any(profile => string.Equals(profile.Name, candidate, StringComparison.OrdinalIgnoreCase)))
         {
-            if (Directory.Exists(destination)) Directory.Move(destination, old);
-            Directory.Move(source, destination);
-            DeleteProfileDirectory(old);
+            candidate = $"{baseName} ({suffix++})";
+            _profileStore.GetProfileDirectoryPath(candidate);
         }
-        catch
-        {
-            if (!Directory.Exists(destination) && Directory.Exists(old)) Directory.Move(old, destination);
-            throw;
-        }
+        return candidate;
     }
 
     private void DeleteProfileDirectory(string id)
@@ -680,5 +737,20 @@ public sealed class MainViewModel : ObservableObject
         var path = Path.Combine(_profileStore.ProfilesRoot, id);
         if (!Directory.Exists(path)) return;
         FileSystemUtilities.DeleteDirectoryTree(path);
+    }
+
+    private void DeleteProfileDirectory(FolderProfile profile)
+    {
+        try
+        {
+            var namedPath = _profileStore.GetProfileDirectoryPath(profile.Name);
+            if (Directory.Exists(namedPath)) FileSystemUtilities.DeleteDirectoryTree(namedPath);
+        }
+        catch (InvalidDataException)
+        {
+            // 壊れたプロファイル名でも、識別子ベースの旧保存先は後始末します。
+        }
+
+        DeleteProfileDirectory(profile.Id);
     }
 }

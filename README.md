@@ -13,7 +13,9 @@
 3. 配置するフォルダーをエクスプローラーからドロップする
 4. ［保存］後、プレビューして切り替える
 
-取り込んだフォルダーはEXEと同じフォルダーの`Profiles`内へ保存され、元フォルダーには依存しません。
+ドラッグ＆ドロップ時はパスだけを登録するため、大きなフォルダーでも画面操作をすぐに続けられます。［保存］を押すと、EXEと同じ階層の`Profiles\[プロファイル名]`へ一度だけコピーされ、以後の切替はその保存内容を配置先へ展開します。元フォルダーには依存しません。
+
+［切替履歴・復元］で履歴を選択し、［ファイル差分...］を押すと、履歴作成時のバックアップと現在の配置先をWinMergeのように比較できます。フォルダーを選び、追加・削除・変更されたファイルを選択すると左右に内容を表示します。履歴行をダブルクリックして開くこともできます。
 
 ## 動作環境
 
@@ -26,4 +28,5 @@
 ```powershell
 dotnet build .\ConfigReplace.slnx -c Release
 dotnet publish .\src\ConfigReplace.App\ConfigReplace.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o .\dist\ConfigReplace
+dotnet test .\ConfigReplace.slnx -c Release
 ```
