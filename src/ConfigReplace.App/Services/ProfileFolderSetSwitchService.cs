@@ -21,12 +21,14 @@ public sealed class ProfileFolderSetSwitchService(
         PropertyNameCaseInsensitive = true,
         Converters = { new JsonStringEnumConverter() }
     };
+    private const string ExistingFolderMarker = "__EXISTS__";
 
     private readonly string _backupRoot = Path.GetFullPath(backupRoot);
 
     public async Task<FolderSetSwitchPlan> CreatePlanAsync(
         FolderProfile profile,
         ProfilesDocument document,
+        IProgress<OperationProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
         var errors = new List<string>();
@@ -50,6 +52,7 @@ public sealed class ProfileFolderSetSwitchService(
 
             try
             {
+                progress?.Report(new OperationProgress(0, 1, rootPath, "切替内容を確認中"));
                 ValidateTargetRoot(rootPath);
                 ValidateTargetParent(rootPath);
                 var currentHashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -63,14 +66,13 @@ public sealed class ProfileFolderSetSwitchService(
                         continue;
                     }
 
-                    var tree = await treeService.ScanAsync(targetPath, cancellationToken);
-                    currentHashes[folderName] = tree.TreeHash;
+                    currentHashes[folderName] = Directory.Exists(targetPath) ? ExistingFolderMarker : "MISSING";
                 }
 
                 foreach (var snapshot in desired.Values)
                 {
                     var snapshotPath = GetSnapshotAbsolutePath(profile, snapshot);
-                    await treeService.LoadAndValidateSnapshotAsync(snapshotPath, cancellationToken);
+                    await treeService.ValidateSnapshotLayoutAsync(snapshotPath, cancellationToken);
                 }
 
                 var added = desired.Keys.Count(folder => !currentHashes.TryGetValue(folder, out var hash) || hash == "MISSING");
@@ -89,6 +91,7 @@ public sealed class ProfileFolderSetSwitchService(
                     RemovedFolderCount = removed,
                     ReplacedFolderCount = replaced
                 });
+                progress?.Report(new OperationProgress(1, 1, rootPath, "切替内容の確認完了"));
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException)
             {
@@ -122,7 +125,7 @@ public sealed class ProfileFolderSetSwitchService(
         try
         {
             EnsureBackupWritable();
-            await VerifyPlanIsUnchangedAsync(plan, cancellationToken);
+            var currentHashes = await VerifyPlanIsUnchangedAsync(plan, cancellationToken);
 
             var runId = Guid.NewGuid().ToString("N");
             runDirectory = CreateRunDirectory(runId, DateTimeOffset.Now);
@@ -138,7 +141,7 @@ public sealed class ProfileFolderSetSwitchService(
                 ProfileName = plan.Profile.Name
             };
 
-            var entries = FlattenEntries(plan);
+            var entries = FlattenEntries(plan, currentHashes);
             for (var index = 0; index < entries.Count; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -452,13 +455,29 @@ public sealed class ProfileFolderSetSwitchService(
         };
     }
 
-    private async Task VerifyPlanIsUnchangedAsync(FolderSetSwitchPlan plan, CancellationToken cancellationToken)
+    private async Task<Dictionary<string, string>> VerifyPlanIsUnchangedAsync(FolderSetSwitchPlan plan, CancellationToken cancellationToken)
     {
+        var currentHashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var group in plan.Groups)
         {
             foreach (var folderName in group.ManagedFolderNames)
             {
-                await EnsureCurrentTreeHashAsync(Path.Combine(group.TargetRootPath, folderName), group.CurrentHashes[folderName], cancellationToken);
+                var targetPath = Path.Combine(group.TargetRootPath, folderName);
+                var tree = await treeService.ScanAsync(targetPath, cancellationToken);
+                currentHashes[targetPath] = tree.TreeHash;
+                var expected = group.CurrentHashes[folderName];
+                if (string.Equals(expected, "MISSING", StringComparison.Ordinal))
+                {
+                    if (tree.Exists) throw new InvalidOperationException($"プレビュー後に配置先が変更されました: {targetPath}");
+                }
+                else if (string.Equals(expected, ExistingFolderMarker, StringComparison.Ordinal))
+                {
+                    if (!tree.Exists) throw new InvalidOperationException($"プレビュー後に配置先が変更されました: {targetPath}");
+                }
+                else if (!string.Equals(tree.TreeHash, expected, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException($"プレビュー後に配置先が変更されました: {targetPath}");
+                }
             }
 
             foreach (var snapshot in group.DesiredFolders)
@@ -466,6 +485,8 @@ public sealed class ProfileFolderSetSwitchService(
                 await treeService.LoadAndValidateSnapshotAsync(GetSnapshotAbsolutePath(plan.Profile, snapshot), cancellationToken);
             }
         }
+
+        return currentHashes;
     }
 
     private Dictionary<string, Dictionary<string, ProfileFolderSnapshot>> NormalizeProfileGroups(FolderProfile profile, List<string>? errors)
@@ -522,7 +543,7 @@ public sealed class ProfileFolderSetSwitchService(
         return result;
     }
 
-    private List<PlanEntry> FlattenEntries(FolderSetSwitchPlan plan)
+    private List<PlanEntry> FlattenEntries(FolderSetSwitchPlan plan, IReadOnlyDictionary<string, string> currentHashes)
     {
         var result = new List<PlanEntry>();
         foreach (var group in plan.Groups)
@@ -531,7 +552,7 @@ public sealed class ProfileFolderSetSwitchService(
             foreach (var folderName in group.ManagedFolderNames)
             {
                 var targetPath = Path.Combine(group.TargetRootPath, folderName);
-                var hash = group.CurrentHashes.TryGetValue(folderName, out var current) ? current : "MISSING";
+                var hash = currentHashes.TryGetValue(targetPath, out var current) ? current : "MISSING";
                 result.Add(new PlanEntry
                 {
                     TargetRootPath = group.TargetRootPath,

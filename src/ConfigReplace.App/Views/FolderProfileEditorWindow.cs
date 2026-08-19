@@ -21,6 +21,7 @@ public sealed class FolderProfileEditorWindow : Form
 {
     private readonly DataGridView _rows = new();
     private readonly Label _instruction = new();
+    private readonly TextBox _profileName = new();
     private readonly string? _existingProfileName;
     private DataGridViewCell? _dropCell;
 
@@ -37,13 +38,18 @@ public sealed class FolderProfileEditorWindow : Form
         MaximizeBox = false;
         MinimizeBox = false;
 
-        _instruction.Text = "配置先を入力し、エクスプローラーからフォルダを「配置するフォルダ」セルへドロップしてください。保存時にProfilesへコピーします。";
+        _instruction.Text = "プロファイル名と配置先を入力し、エクスプローラーからフォルダを「配置するフォルダ」セルへドロップしてください。保存時にProfilesへコピーします。";
         _instruction.AutoSize = true;
         _instruction.Location = new Point(10, 12);
         _instruction.ForeColor = SystemColors.GrayText;
         Controls.Add(_instruction);
 
-        _rows.SetBounds(10, 36, 700, 194);
+        Controls.Add(new Label { Text = "プロファイル名:", AutoSize = true, Location = new Point(10, 38) });
+        _profileName.SetBounds(105, 34, 300, 23);
+        _profileName.Text = _existingProfileName ?? string.Empty;
+        Controls.Add(_profileName);
+
+        _rows.SetBounds(10, 64, 700, 166);
         _rows.AllowDrop = true;
         _rows.AllowUserToAddRows = true;
         _rows.AllowUserToDeleteRows = true;
@@ -243,7 +249,9 @@ public sealed class FolderProfileEditorWindow : Form
         }
 
         var generatedName = folders.Count == 1 ? folders[0].FolderName : $"{folders[0].FolderName} ほか{folders.Count - 1}件";
-        Result = new FolderProfileEditResult { Name = _existingProfileName ?? generatedName, Folders = folders };
+        var profileName = _profileName.Text.Trim();
+        if (profileName.Length == 0) profileName = generatedName;
+        Result = new FolderProfileEditResult { Name = profileName, Folders = folders };
         DialogResult = DialogResult.OK;
         Close();
     }

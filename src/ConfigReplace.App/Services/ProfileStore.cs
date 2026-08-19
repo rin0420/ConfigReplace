@@ -118,11 +118,19 @@ public sealed class ProfileStore
             && !string.Equals(previousProfileName, profile.Name, StringComparison.OrdinalIgnoreCase))
         {
             var previousPath = GetProfileDirectoryPath(previousProfileName);
+            if (Directory.Exists(destination) || File.Exists(destination))
+            {
+                throw new IOException($"プロファイル名の保存先が既に使用されています: {destination}");
+            }
             if (Directory.Exists(previousPath))
             {
-                if (!Directory.Exists(destination)) Directory.Move(previousPath, destination);
-                else MergeProfileDirectories(previousPath, destination);
+                Directory.Move(previousPath, destination);
             }
+        }
+        else if (string.IsNullOrWhiteSpace(previousProfileName)
+            && (Directory.Exists(destination) || File.Exists(destination)))
+        {
+            throw new IOException($"プロファイル名の保存先が既に使用されています: {destination}");
         }
 
         if (!Directory.Exists(stagingPath)) return;
@@ -214,15 +222,4 @@ public sealed class ProfileStore
         }
     }
 
-    private static void MergeProfileDirectories(string source, string destination)
-    {
-        foreach (var entry in Directory.EnumerateFileSystemEntries(source))
-        {
-            var target = Path.Combine(destination, Path.GetFileName(entry));
-            if (File.Exists(target) || Directory.Exists(target)) continue;
-            if (Directory.Exists(entry)) Directory.Move(entry, target);
-            else File.Move(entry, target);
-        }
-        try { Directory.Delete(source); } catch { }
-    }
 }

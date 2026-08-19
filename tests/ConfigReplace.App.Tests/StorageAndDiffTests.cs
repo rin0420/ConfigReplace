@@ -33,6 +33,30 @@ public sealed class StorageAndDiffTests : IDisposable
     }
 
     [Fact]
+    public async Task CapturePreservesEmptyDirectoriesAndDoesNotReach100BeforeFinalization()
+    {
+        var source = Path.Combine(_root, "source-with-empty-directory");
+        var snapshot = Path.Combine(_root, "snapshot");
+        Directory.CreateDirectory(Path.Combine(source, "empty", "nested"));
+        await File.WriteAllTextAsync(Path.Combine(source, "file.txt"), "data");
+        var progress = new List<OperationProgress>();
+        var tree = new FolderTreeService();
+
+        var manifest = await tree.CaptureSelfContainedAsync(
+            source,
+            snapshot,
+            new Progress<OperationProgress>(progress.Add));
+
+        var loaded = await tree.LoadAndValidateSnapshotAsync(snapshot);
+        Assert.Equal(manifest.TreeHash, loaded.TreeHash);
+        Assert.Contains("empty", loaded.Directories, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains(Path.Combine("empty", "nested"), loaded.Directories, StringComparer.OrdinalIgnoreCase);
+        Assert.NotEmpty(progress);
+        Assert.All(progress.Take(progress.Count - 1), item => Assert.True(item.Percent < 100));
+        Assert.Equal(100, progress[^1].Percent);
+    }
+
+    [Fact]
     public void StagedSnapshotIsCommittedUnderProfileName()
     {
         var store = new ProfileStore(Path.Combine(_root, "Profiles"));
@@ -46,6 +70,28 @@ public sealed class StorageAndDiffTests : IDisposable
 
         Assert.True(File.Exists(Path.Combine(store.ProfilesRoot, "本番", "snapshot-id", "snapshot.json")));
         Assert.False(Directory.Exists(Path.Combine(store.ProfilesRoot, stagingId)));
+    }
+
+    [Fact]
+    public void RenamingProfileMovesNamedSnapshotDirectoryWithoutMerging()
+    {
+        var store = new ProfileStore(Path.Combine(_root, "Profiles"));
+        var oldProfile = new FolderProfile { Id = "profile-id", Name = "旧名" };
+        var newProfile = new FolderProfile { Id = oldProfile.Id, Name = "新名" };
+        var oldSnapshot = store.GetSnapshotPath(oldProfile, "snapshot-id");
+        Directory.CreateDirectory(oldSnapshot);
+        File.WriteAllText(Path.Combine(oldSnapshot, "snapshot.json"), "{}");
+
+        var stagingId = "profile-id.staging-rename";
+        var staged = store.GetSnapshotPath(stagingId, "new-snapshot");
+        Directory.CreateDirectory(staged);
+        File.WriteAllText(Path.Combine(staged, "snapshot.json"), "{}");
+
+        store.CommitStagedSnapshots(newProfile, stagingId, oldProfile.Name);
+
+        Assert.False(Directory.Exists(store.GetProfileDirectoryPath(oldProfile.Name)));
+        Assert.True(File.Exists(Path.Combine(store.GetProfileDirectoryPath(newProfile.Name), "snapshot-id", "snapshot.json")));
+        Assert.True(File.Exists(Path.Combine(store.GetProfileDirectoryPath(newProfile.Name), "new-snapshot", "snapshot.json")));
     }
 
     [Fact]
@@ -99,6 +145,50 @@ public sealed class StorageAndDiffTests : IDisposable
         var plan = await service.CreatePlanAsync(profile, document);
 
         Assert.True(plan.IsValid, string.Join(Environment.NewLine, plan.ValidationErrors));
+    }
+
+    [Fact]
+    public async Task FastPreviewPlanIsRevalidatedBeforeSwitch()
+    {
+        var profiles = Path.Combine(_root, "Profiles");
+        var backups = Path.Combine(_root, "Backups");
+        var targetRoot = Path.Combine(_root, "target-root");
+        var targetFolder = Path.Combine(targetRoot, "sample");
+        var source = Path.Combine(_root, "desired-source");
+        Directory.CreateDirectory(targetFolder);
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(Path.Combine(targetFolder, "value.txt"), "before");
+        await File.WriteAllTextAsync(Path.Combine(source, "value.txt"), "after");
+
+        var store = new ProfileStore(profiles);
+        var tree = new FolderTreeService();
+        var profile = new FolderProfile { Id = "profile-id", Name = "切替" };
+        var snapshotPath = store.GetSnapshotPath(profile, "snapshot-id");
+        var manifest = await tree.CaptureSelfContainedAsync(source, snapshotPath);
+        profile.Groups.Add(new ProfileFolderGroup
+        {
+            Id = "group-id",
+            TargetRootPath = targetRoot,
+            Folders =
+            [
+                new ProfileFolderSnapshot
+                {
+                    Id = "snapshot-id",
+                    FolderName = "sample",
+                    SnapshotRelativePath = Path.Combine(profile.Name, "snapshot-id"),
+                    TreeHash = manifest.TreeHash,
+                    FileCount = manifest.Files.Count,
+                    TotalBytes = manifest.Files.Sum(file => file.Length)
+                }
+            ]
+        });
+
+        var service = new ProfileFolderSetSwitchService(store, tree, backups);
+        var plan = await service.CreatePlanAsync(profile, new ProfilesDocument { Profiles = [profile] });
+        var result = await service.ExecuteAsync(plan);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal("after", await File.ReadAllTextAsync(Path.Combine(targetFolder, "value.txt")));
     }
 
     [Fact]

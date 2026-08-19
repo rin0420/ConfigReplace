@@ -4,14 +4,16 @@
 
 ## 配布
 
-[ConfigReplace.zipをダウンロード](https://github.com/rin0420/ConfigReplace/releases/download/v1.1.0/ConfigReplace.zip)
+[ConfigReplace.zipをダウンロード](https://github.com/rin0420/ConfigReplace/releases/download/v1.2.0/ConfigReplace.zip)
 
 ## 使い方
 
 1. ［新規］を押す
-2. 配置先を指定する
+2. プロファイル名と配置先を指定する
 3. 配置するフォルダーをエクスプローラーからドロップする
 4. ［保存］後、プレビューして切り替える
+
+プロファイル名は作成時・編集時に変更できます。名前を変更しても保存済みスナップショットはProfiles内で引き継がれます。
 
 ドラッグ＆ドロップ時はパスだけを登録するため、大きなフォルダーでも画面操作をすぐに続けられます。［保存］を押すと、EXEと同じ階層の`Profiles\[プロファイル名]`へ一度だけコピーされ、以後の切替はその保存内容を配置先へ展開します。元フォルダーには依存しません。
 

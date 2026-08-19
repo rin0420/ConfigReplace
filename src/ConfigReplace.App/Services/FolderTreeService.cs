@@ -100,6 +100,7 @@ public sealed class FolderTreeService
             throw new DirectoryNotFoundException($"コピー元フォルダーがありません: {sourcePath}");
         }
         EnsureDirectoryIsSafe(sourceRoot);
+        progress?.Report(new OperationProgress(0, 1, string.Empty, "対象フォルダーを確認中"));
 
         var root = Path.GetFullPath(snapshotRoot);
         if (FileSystemUtilities.IsSameOrChildPath(root, sourceRoot))
@@ -149,6 +150,16 @@ public sealed class FolderTreeService
 
         directories.Sort(StringComparer.OrdinalIgnoreCase);
         sourceFiles.Sort((left, right) => StringComparer.OrdinalIgnoreCase.Compare(left.RelativePath, right.RelativePath));
+        var totalWork = directories.Count + sourceFiles.Count + 1;
+        var completedWork = 0;
+        foreach (var relativeDirectory in directories)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Directory.CreateDirectory(Path.Combine(contentRoot, relativeDirectory));
+            completedWork++;
+            progress?.Report(new OperationProgress(completedWork, totalWork, relativeDirectory, "スナップショットのフォルダーを準備中"));
+        }
+
         var files = new List<SnapshotFileEntry>(sourceFiles.Count);
         for (var index = 0; index < sourceFiles.Count; index++)
         {
@@ -156,7 +167,8 @@ public sealed class FolderTreeService
             var sourceFile = sourceFiles[index];
             var destination = Path.Combine(contentRoot, sourceFile.RelativePath);
             files.Add(await CopyFileAndHashAsync(sourceFile.FullPath, sourceFile.RelativePath, destination, cancellationToken));
-            progress?.Report(new OperationProgress(index + 1, sourceFiles.Count, sourceFile.RelativePath, "スナップショット作成中"));
+            completedWork++;
+            progress?.Report(new OperationProgress(completedWork, totalWork, sourceFile.RelativePath, "スナップショット作成中"));
         }
 
         var treeHash = ComputeTreeHash(directories, files);
@@ -170,11 +182,11 @@ public sealed class FolderTreeService
         };
         await SaveManifestAsync(Path.Combine(root, "snapshot.json"), manifest, cancellationToken);
 
-        progress?.Report(new OperationProgress(files.Count, files.Count, string.Empty, "スナップショット作成完了"));
+        progress?.Report(new OperationProgress(totalWork, totalWork, string.Empty, "スナップショット作成完了"));
         return manifest;
     }
 
-    public async Task<SnapshotManifest> LoadAndValidateSnapshotAsync(
+    public async Task<SnapshotManifest> LoadSnapshotManifestAsync(
         string snapshotRoot,
         CancellationToken cancellationToken = default)
     {
@@ -191,7 +203,53 @@ public sealed class FolderTreeService
             PropertyNameCaseInsensitive = true
         }, cancellationToken)
             ?? throw new InvalidDataException("スナップショットのmanifestが空です。");
-        var content = await ScanAsync(Path.Combine(snapshotRoot, "content"), cancellationToken);
+        ValidateManifestPaths(snapshotRoot, manifest);
+        return manifest;
+    }
+
+    public async Task<SnapshotManifest> ValidateSnapshotLayoutAsync(
+        string snapshotRoot,
+        CancellationToken cancellationToken = default)
+    {
+        var manifest = await LoadSnapshotManifestAsync(snapshotRoot, cancellationToken);
+        var contentRoot = Path.Combine(snapshotRoot, "content");
+        if (!Directory.Exists(contentRoot))
+        {
+            throw new InvalidDataException($"スナップショットの内容が破損しています: {snapshotRoot}");
+        }
+
+        EnsureManifestDirectories(contentRoot, manifest.Directories);
+        var expectedDirectories = manifest.Directories.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var actualDirectories = Directory.EnumerateDirectories(contentRoot, "*", SearchOption.AllDirectories)
+            .Select(path => FileSystemUtilities.SafeRelativePath(contentRoot, path))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!expectedDirectories.SetEquals(actualDirectories))
+        {
+            throw new InvalidDataException($"スナップショットの内容が破損しています: {snapshotRoot}");
+        }
+
+        var expectedFiles = manifest.Files.ToDictionary(file => file.RelativePath, StringComparer.OrdinalIgnoreCase);
+        var actualFiles = Directory.EnumerateFiles(contentRoot, "*", SearchOption.AllDirectories)
+            .Select(path => FileSystemUtilities.SafeRelativePath(contentRoot, path))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (expectedFiles.Count != actualFiles.Count
+            || actualFiles.Any(path => !expectedFiles.TryGetValue(path, out var expected)
+                || new FileInfo(Path.Combine(contentRoot, path)).Length != expected.Length))
+        {
+            throw new InvalidDataException($"スナップショットの内容が破損しています: {snapshotRoot}");
+        }
+
+        return manifest;
+    }
+
+    public async Task<SnapshotManifest> LoadAndValidateSnapshotAsync(
+        string snapshotRoot,
+        CancellationToken cancellationToken = default)
+    {
+        var manifest = await LoadSnapshotManifestAsync(snapshotRoot, cancellationToken);
+        var contentRoot = Path.Combine(snapshotRoot, "content");
+        EnsureManifestDirectories(contentRoot, manifest.Directories);
+        var content = await ScanAsync(contentRoot, cancellationToken);
         if (!content.Exists || !string.Equals(content.TreeHash, manifest.TreeHash, StringComparison.Ordinal))
         {
             throw new InvalidDataException($"スナップショットの内容が破損しています: {snapshotRoot}");
@@ -371,6 +429,60 @@ public sealed class FolderTreeService
         }
 
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString())));
+    }
+
+    private static void ValidateManifestPaths(string snapshotRoot, SnapshotManifest manifest)
+    {
+        if (manifest.Directories is null || manifest.Files is null)
+        {
+            throw new InvalidDataException($"スナップショットのmanifestが不完全です: {snapshotRoot}");
+        }
+
+        var contentRoot = Path.Combine(snapshotRoot, "content");
+        var directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var relativeDirectory in manifest.Directories)
+        {
+            if (!directories.Add(relativeDirectory))
+            {
+                throw new InvalidDataException($"スナップショットのフォルダー一覧が不正です: {snapshotRoot}");
+            }
+            GetContainedSnapshotPath(contentRoot, relativeDirectory, "フォルダー");
+        }
+
+        var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in manifest.Files)
+        {
+            if (!files.Add(file.RelativePath))
+            {
+                throw new InvalidDataException($"スナップショットのファイル一覧が不正です: {snapshotRoot}");
+            }
+            GetContainedSnapshotPath(contentRoot, file.RelativePath, "ファイル");
+        }
+    }
+
+    private static void EnsureManifestDirectories(string contentRoot, IEnumerable<string> relativeDirectories)
+    {
+        foreach (var relativeDirectory in relativeDirectories)
+        {
+            Directory.CreateDirectory(GetContainedSnapshotPath(contentRoot, relativeDirectory, "フォルダー"));
+        }
+    }
+
+    private static string GetContainedSnapshotPath(string contentRoot, string relativePath, string kind)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath))
+        {
+            throw new InvalidDataException($"スナップショットの{kind}パスが不正です: {relativePath}");
+        }
+
+        var fullPath = Path.GetFullPath(Path.Combine(contentRoot, relativePath));
+        if (string.Equals(fullPath, Path.GetFullPath(contentRoot), StringComparison.OrdinalIgnoreCase)
+            || !FileSystemUtilities.IsSameOrChildPath(fullPath, contentRoot))
+        {
+            throw new InvalidDataException($"スナップショットの{kind}パスが不正です: {relativePath}");
+        }
+
+        return fullPath;
     }
 
     private static async Task SaveManifestAsync(string path, SnapshotManifest manifest, CancellationToken cancellationToken)
