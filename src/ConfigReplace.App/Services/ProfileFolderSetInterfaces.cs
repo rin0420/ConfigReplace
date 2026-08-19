@@ -10,6 +10,7 @@ public interface IProfileFolderSetSwitchService
     Task<FolderSetSwitchPlan> CreatePlanAsync(
         FolderProfile profile,
         ProfilesDocument document,
+        IProgress<OperationProgress>? progress = null,
         CancellationToken cancellationToken = default);
 
     Task<OperationResult> ExecuteAsync(

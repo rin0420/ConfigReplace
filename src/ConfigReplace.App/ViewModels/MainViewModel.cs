@@ -200,20 +200,35 @@ public sealed class MainViewModel : ObservableObject
         using var dialog = new FolderProfileEditorWindow();
         if (dialog.ShowDialog(Form.ActiveForm) != DialogResult.OK || dialog.Result is null) return;
 
+        string profileName;
+        try
+        {
+            profileName = CreateUniqueProfileName(dialog.Result.Name);
+        }
+        catch (InvalidDataException exception)
+        {
+            MessageBox.Show(Form.ActiveForm, exception.Message, "プロファイル名を確認してください", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
         BeginOperation("プロファイルを作成しています。");
         var profile = new FolderProfile
         {
             Id = Guid.NewGuid().ToString("N"),
-            Name = CreateUniqueProfileName(dialog.Result.Name),
+            Name = profileName,
             CreatedAt = DateTimeOffset.Now,
             UpdatedAt = DateTimeOffset.Now
         };
+        var storageCommitted = false;
         try
         {
             profile.Groups = await CaptureProfileFoldersAsync(profile, dialog.Result.Folders);
+            storageCommitted = true;
             _document.SchemaVersion = 2;
             _document.Profiles.Add(profile);
+            SetProgressPhase(0, 1, "プロファイル設定を保存中");
             await _profileStore.SaveAsync(_document, _cancellation!.Token);
+            SetProgressPhase(1, 1, "プロファイル作成完了");
             SyncCollections(profile);
             StatusText = $"プロファイル「{profile.Name}」を作成しました。";
         }
@@ -225,7 +240,7 @@ public sealed class MainViewModel : ObservableObject
         {
             StatusText = "プロファイルを作成できませんでした。";
             DetailText = exception.Message;
-            DeleteProfileDirectory(profile);
+            if (storageCommitted) DeleteProfileDirectory(profile);
         }
         finally
         {
@@ -240,18 +255,22 @@ public sealed class MainViewModel : ObservableObject
         using var dialog = new FolderProfileEditorWindow(edited, "プロファイル編集");
         if (dialog.ShowDialog(Form.ActiveForm) != DialogResult.OK || dialog.Result is null) return;
 
+        var newName = dialog.Result.Name.Trim();
+        if (!TryValidateEditedProfileName(edited, newName)) return;
+
         BeginOperation("プロファイルを更新しています。");
         var previousName = edited.Name;
         try
         {
-            var newName = dialog.Result.Name;
             var groups = await CaptureProfileFoldersAsync(edited, dialog.Result.Folders, previousName, newName);
-            edited.Name = dialog.Result.Name;
+            edited.Name = newName;
             edited.UpdatedAt = DateTimeOffset.Now;
             edited.Groups = groups;
             edited.Snapshots.Clear();
             _document.SchemaVersion = 2;
+            SetProgressPhase(0, 1, "プロファイル設定を保存中");
             await _profileStore.SaveAsync(_document, _cancellation!.Token);
+            SetProgressPhase(1, 1, "プロファイル更新完了");
             SyncCollections(edited);
             StatusText = $"プロファイル「{edited.Name}」を更新しました。";
         }
@@ -368,7 +387,7 @@ public sealed class MainViewModel : ObservableObject
         BeginOperation("切替内容を確認しています。");
         try
         {
-            _switchPlan = await Task.Run(() => _switchService.CreatePlanAsync(SelectedProfile, _document, _cancellation!.Token));
+            _switchPlan = await Task.Run(() => _switchService.CreatePlanAsync(SelectedProfile, _document, CreateProgress(), _cancellation!.Token));
             PlanSummary = BuildPlanSummary(_switchPlan);
             StatusText = _switchPlan.IsValid ? "切替内容を確認してください。" : "切替前の検証に失敗しました。";
             DetailText = _switchPlan.ValidationErrors.Count == 0 ? string.Empty : string.Join(Environment.NewLine, _switchPlan.ValidationErrors);
@@ -535,7 +554,9 @@ public sealed class MainViewModel : ObservableObject
                 CreatedAt = profile.CreatedAt,
                 UpdatedAt = profile.UpdatedAt
             };
+            SetProgressPhase(0, 1, "Profilesへ保存中");
             _profileStore.CommitStagedSnapshots(destinationProfile, tempId, previousProfileName);
+            SetProgressPhase(1, 1, "Profilesへの保存完了");
             return groups.Values.ToList();
         }
         finally
@@ -675,6 +696,13 @@ public sealed class MainViewModel : ObservableObject
             StatusText = string.IsNullOrEmpty(value.CurrentFile) ? value.Phase : $"{value.Phase}: {value.CurrentFile}";
         });
 
+    private void SetProgressPhase(int processed, int total, string phase, string currentFile = "")
+    {
+        var progress = new OperationProgress(processed, total, currentFile, phase);
+        ProgressPercent = progress.Percent;
+        StatusText = string.IsNullOrEmpty(progress.CurrentFile) ? progress.Phase : $"{progress.Phase}: {progress.CurrentFile}";
+    }
+
     private void ShowResult(OperationResult result)
     {
         StatusText = result.Message;
@@ -691,7 +719,7 @@ public sealed class MainViewModel : ObservableObject
         {
             lines.Add($"{group.TargetRootPath}: 追加 {group.AddedFolderCount:N0} / 置換 {group.ReplacedFolderCount:N0} / 削除 {group.RemovedFolderCount:N0} フォルダー");
         }
-        lines.Add("登録済みプロファイル間で管理しているフォルダーだけを、バックアップ後に切り替えます。");
+        lines.Add("登録済みプロファイル間で管理しているフォルダーだけを、実行直前に完全検証してからバックアップ後に切り替えます。");
         return string.Join(Environment.NewLine, lines);
     }
 
@@ -730,6 +758,39 @@ public sealed class MainViewModel : ObservableObject
             _profileStore.GetProfileDirectoryPath(candidate);
         }
         return candidate;
+    }
+
+    private bool TryValidateEditedProfileName(FolderProfile profile, string requestedName)
+    {
+        string newPath;
+        try
+        {
+            newPath = _profileStore.GetProfileDirectoryPath(requestedName);
+        }
+        catch (InvalidDataException exception)
+        {
+            MessageBox.Show(Form.ActiveForm, exception.Message, "プロファイル名を確認してください", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return false;
+        }
+
+        if (_document.Profiles.Any(other => !ReferenceEquals(other, profile)
+            && string.Equals(other.Name, requestedName, StringComparison.OrdinalIgnoreCase)))
+        {
+            MessageBox.Show(Form.ActiveForm, "同じ名前のプロファイルが既にあります。別の名前を指定してください。", "プロファイル名を確認してください", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return false;
+        }
+
+        string oldPath;
+        try { oldPath = _profileStore.GetProfileDirectoryPath(profile.Name); }
+        catch (InvalidDataException) { oldPath = string.Empty; }
+        if (!string.Equals(oldPath, newPath, StringComparison.OrdinalIgnoreCase)
+            && (Directory.Exists(newPath) || File.Exists(newPath)))
+        {
+            MessageBox.Show(Form.ActiveForm, "同名のProfiles保存先が既にあります。別の名前を指定してください。", "プロファイル名を確認してください", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return false;
+        }
+
+        return true;
     }
 
     private void DeleteProfileDirectory(string id)
