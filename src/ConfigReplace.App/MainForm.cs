@@ -42,6 +42,9 @@ public sealed class MainForm : Form
         Controls.Add(statusStrip);
 
         WireEvents();
+        // 初期読み込みがイベント購読より先に完了していても、一覧を画面へ反映する。
+        RefreshProfiles();
+        RefreshFolderRows();
         RefreshAll();
     }
 

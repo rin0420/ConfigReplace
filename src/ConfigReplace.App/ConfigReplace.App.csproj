@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>ConfigReplace</AssemblyName>
     <RootNamespace>ConfigReplace</RootNamespace>
-    <Version>1.3.0</Version>
+    <Version>1.3.1</Version>
     <Authors>社内ツール</Authors>
     <Description>複数のフォルダー群をプロファイル単位で安全に切り替えるWindowsアプリ</Description>
     <ApplicationManifest>app.manifest</ApplicationManifest>

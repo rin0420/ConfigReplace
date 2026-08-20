@@ -1,4 +1,4 @@
-ConfigReplace 1.3.0
+ConfigReplace 1.3.1
 
 ConfigReplace.exeを起動してください。
 プロファイル名は作成時・編集時に変更できます。
