@@ -6,6 +6,8 @@
 
 [ConfigReplace.zipをダウンロード](https://github.com/rin0420/ConfigReplace/releases/download/v1.3.1/ConfigReplace.zip)
 
+[最新のソースコードを閲覧](https://github.com/rin0420/ConfigReplace/tree/main)
+
 ## 使い方
 
 1. ［新規］を押す
