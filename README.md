@@ -2,6 +2,10 @@
 
 プロファイルに登録したフォルダーを配置先へ上書きする、Windows向けの小型ツールです。
 
+## スクリーンショット
+
+![ConfigReplaceのメイン画面](docs/screenshot.jpg)
+
 ## 配布
 
 [ConfigReplace.zipをダウンロード](https://github.com/rin0420/ConfigReplace/releases/download/v1.3.1/ConfigReplace.zip)
