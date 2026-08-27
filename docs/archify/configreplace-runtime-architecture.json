@@ -1,0 +1,250 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "ConfigReplace Runtime Architecture",
+    "output": "configreplace-runtime-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/rin0420/ConfigReplace.git",
+      "revision": "7371e8fb2a161978adbdeb725f05dc610ee7ae6c"
+    },
+    "viewBox": [1380, 615],
+    "views": [
+      {
+        "id": "startup-path",
+        "label": "起動経路",
+        "focus": ["program", "ui", "vm", "migration", "profile-store", "profiles-json"],
+        "note": "Program から MainForm、MainViewModel、保存データの読み込みとUI表示までを追います。"
+      },
+      {
+        "id": "profile-changes",
+        "label": "プロファイル変更",
+        "focus": ["ui", "vm", "models", "profile-manager", "folder-io", "profile-data", "profiles-json"],
+        "note": "作成・編集のステージング、フォルダーコピー、JSON保存の依存方向を追います。"
+      },
+      {
+        "id": "switch-path",
+        "label": "切り替え経路",
+        "focus": ["ui", "vm", "switch-service", "profile-store", "folder-io", "windows-os"],
+        "note": "内容確認後に保存済みフォルダーを配置先へ反映する経路です。"
+      },
+      {
+        "id": "coupling-findings",
+        "label": "結合と責務",
+        "focus": ["ui", "vm", "profile-manager", "switch-service", "migration", "profile-store", "folder-io"],
+        "note": "UIとViewModelの相互依存、Storeとコピー層の責務集中を確認します。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "program",
+      "type": "backend",
+      "label": "Program.Main",
+      "sublabel": "mutex; Run",
+      "tag": "entry point",
+      "sources": [
+        { "path": "src/ConfigReplace.App/Program.cs", "line": 6, "end_line": 37, "label": "Main + mutex" }
+      ],
+      "pos": [30, 270],
+      "size": [170, 86]
+    },
+    {
+      "id": "ui",
+      "type": "frontend",
+      "label": "WinForms UI / Views",
+      "sublabel": "bindings; drag/drop",
+      "tag": "UI ↔ VM",
+      "sources": [
+        { "path": "src/ConfigReplace.App/MainForm.cs", "line": 8, "end_line": 60, "label": "MainForm" },
+        { "path": "src/ConfigReplace.App/MainForm.cs", "line": 157, "end_line": 177, "label": "event wiring" },
+        { "path": "src/ConfigReplace.App/Views/FolderProfileEditorWindow.cs", "line": 6, "end_line": 114, "label": "editor view" }
+      ],
+      "pos": [220, 210],
+      "size": [180, 128]
+    },
+    {
+      "id": "vm",
+      "type": "backend",
+      "label": "MainViewModel",
+      "sublabel": "commands; async; progress",
+      "tag": "concrete wiring",
+      "sources": [
+        { "path": "src/ConfigReplace.App/ViewModels/MainViewModel.cs", "line": 16, "end_line": 50, "label": "construction" },
+        { "path": "src/ConfigReplace.App/ViewModels/MainViewModel.cs", "line": 118, "end_line": 181, "label": "startup load" },
+        { "path": "src/ConfigReplace.App/ViewModels/MainViewModel.cs", "line": 183, "end_line": 430, "label": "commands" }
+      ],
+      "pos": [440, 210],
+      "size": [200, 128]
+    },
+    {
+      "id": "models",
+      "type": "backend",
+      "label": "Domain Models",
+      "sublabel": "profiles; plans; results",
+      "tag": "shared contracts",
+      "sources": [
+        { "path": "src/ConfigReplace.App/Models/FolderProfileModels.cs", "line": 5, "end_line": 81, "label": "profile + plan models" },
+        { "path": "src/ConfigReplace.App/Models/OperationModels.cs", "line": 3, "end_line": 10, "label": "operation result" },
+        { "path": "src/ConfigReplace.App/Models/ProfileEditingModels.cs", "line": 3, "end_line": 15, "label": "editor result" }
+      ],
+      "pos": [440, 45],
+      "size": [200, 112]
+    },
+    {
+      "id": "profile-manager",
+      "type": "backend",
+      "label": "ProfileManager",
+      "sublabel": "CRUD; folder + JSON transaction",
+      "tag": "staging boundary",
+      "sources": [
+        { "path": "src/ConfigReplace.App/Services/ProfileManager.cs", "line": 6, "end_line": 90, "label": "change operations" },
+        { "path": "src/ConfigReplace.App/Services/ProfileManager.cs", "line": 143, "end_line": 240, "label": "staging + rollback" }
+      ],
+      "pos": [680, 45],
+      "size": [200, 112]
+    },
+    {
+      "id": "switch-service",
+      "type": "backend",
+      "label": "ProfileFolderSetSwitchService",
+      "sublabel": "plan validation; per-folder execute",
+      "tag": "partial-progress semantics",
+      "sources": [
+        { "path": "src/ConfigReplace.App/Services/ProfileFolderSetSwitchService.cs", "line": 9, "end_line": 121, "label": "plan" },
+        { "path": "src/ConfigReplace.App/Services/ProfileFolderSetSwitchService.cs", "line": 123, "end_line": 172, "label": "execute" },
+        { "path": "src/ConfigReplace.App/Services/ProfileFolderSetSwitchService.cs", "line": 174, "end_line": 229, "label": "target guards" }
+      ],
+      "pos": [680, 210],
+      "size": [200, 112]
+    },
+    {
+      "id": "migration",
+      "type": "backend",
+      "label": "ProfileStorageMigrationService",
+      "sublabel": "legacy; prepare; rollback",
+      "tag": "startup migration",
+      "sources": [
+        { "path": "src/ConfigReplace.App/Services/ProfileStorageMigrationService.cs", "line": 9, "end_line": 101, "label": "prepare migration" },
+        { "path": "src/ConfigReplace.App/Services/ProfileStorageMigrationService.cs", "line": 103, "end_line": 191, "label": "legacy metadata" },
+        { "path": "src/ConfigReplace.App/Services/ProfileStorageMigrationService.cs", "line": 194, "end_line": 269, "label": "transaction" }
+      ],
+      "pos": [680, 390],
+      "size": [200, 112]
+    },
+    {
+      "id": "profile-store",
+      "type": "backend",
+      "label": "ProfileStore",
+      "sublabel": "JSON; paths; transactions",
+      "tag": "persistence gateway",
+      "sources": [
+        { "path": "src/ConfigReplace.App/Services/ProfileStore.cs", "line": 7, "end_line": 64, "label": "load / save" },
+        { "path": "src/ConfigReplace.App/Services/ProfileStore.cs", "line": 66, "end_line": 170, "label": "paths + commit" },
+        { "path": "src/ConfigReplace.App/Services/ProfileStore.cs", "line": 468, "end_line": 584, "label": "document validation" }
+      ],
+      "pos": [910, 390],
+      "size": [220, 112]
+    },
+    {
+      "id": "folder-io",
+      "type": "backend",
+      "label": "FolderTreeService + FileSystemUtilities",
+      "sublabel": "copy; replace; reparse guards; rollback",
+      "tag": "filesystem safety",
+      "sources": [
+        { "path": "src/ConfigReplace.App/Services/FolderTreeService.cs", "line": 5, "end_line": 140, "label": "copy + rollback" },
+        { "path": "src/ConfigReplace.App/Services/FolderTreeService.cs", "line": 142, "end_line": 240, "label": "temporary replace" },
+        { "path": "src/ConfigReplace.App/Services/FileSystemUtilities.cs", "line": 3, "end_line": 141, "label": "path + delete safety" }
+      ],
+      "pos": [910, 210],
+      "size": [255, 128]
+    },
+    {
+      "id": "profile-data",
+      "type": "database",
+      "label": "Profiles/<profile>/<folder>",
+      "sublabel": "stored folders; switch source",
+      "tag": "persistent folder data",
+      "sources": [
+        { "path": "src/ConfigReplace.App/Services/ProfileStore.cs", "line": 91, "end_line": 102, "label": "direct layout" },
+        { "path": "README.md", "line": 22, "end_line": 26, "label": "runtime storage contract" },
+        { "path": "tests/ConfigReplace.App.Tests/StorageAndOverwriteTests.cs", "line": 12, "end_line": 35, "label": "storage test" }
+      ],
+      "pos": [1190, 390],
+      "size": [180, 112]
+    },
+    {
+      "id": "profiles-json",
+      "type": "database",
+      "label": "profiles.json",
+      "sublabel": "metadata; schema v1/v2",
+      "tag": "persistent metadata",
+      "sources": [
+        { "path": "src/ConfigReplace.App/Services/ProfileStore.cs", "line": 9, "end_line": 15, "label": "JSON options" },
+        { "path": "src/ConfigReplace.App/Services/ProfileStore.cs", "line": 26, "end_line": 64, "label": "load / save" },
+        { "path": "src/ConfigReplace.App/Models/FolderProfileModels.cs", "line": 5, "end_line": 10, "label": "document model" }
+      ],
+      "pos": [1190, 510],
+      "size": [180, 100]
+    },
+    {
+      "id": "windows-os",
+      "type": "external",
+      "label": "Windows / OS APIs",
+      "sublabel": "WinForms; Mutex; Shell",
+      "tag": "OS boundary",
+      "sources": [
+        { "path": "src/ConfigReplace.App/app.manifest", "line": 4, "end_line": 8, "label": "asInvoker" },
+        { "path": "src/ConfigReplace.App/Services/FolderLauncher.cs", "line": 10, "end_line": 30, "label": "ShellFolderLauncher" },
+        { "path": "src/ConfigReplace.App/Program.cs", "line": 11, "end_line": 37, "label": "mutex + runtime" }
+      ],
+      "pos": [1190, 40],
+      "size": [180, 120]
+    }
+  ],
+  "connections": [
+    { "id": "program-ui", "from": "program", "to": "ui", "variant": "emphasis" },
+    { "id": "ui-vm", "from": "ui", "to": "vm" },
+    { "id": "vm-ui", "from": "vm", "to": "ui", "variant": "dashed", "fromSide": "top", "toSide": "top", "via": [[540, 180], [310, 180]] },
+    { "id": "vm-models", "from": "vm", "to": "models", "fromSide": "top", "toSide": "bottom" },
+    { "id": "vm-profile-manager", "from": "vm", "to": "profile-manager", "fromSide": "right", "toSide": "left", "via": [[660, 274], [660, 101]] },
+    { "id": "vm-switch", "from": "vm", "to": "switch-service" },
+    { "id": "vm-migration", "from": "vm", "to": "migration", "fromSide": "bottom", "toSide": "top", "via": [[540, 350], [650, 350], [650, 370], [780, 370]] },
+    { "id": "profile-manager-store", "from": "profile-manager", "to": "profile-store", "fromSide": "right", "toSide": "top", "via": [[1185, 101], [1185, 350], [1020, 350]] },
+    { "id": "profile-manager-io", "from": "profile-manager", "to": "folder-io", "fromSide": "bottom", "toSide": "top", "via": [[780, 180], [1037.5, 180]] },
+    { "id": "switch-store", "from": "switch-service", "to": "profile-store", "fromSide": "bottom", "toSide": "top", "via": [[780, 370], [1020, 370]] },
+    { "id": "switch-io", "from": "switch-service", "to": "folder-io" },
+    { "id": "migration-store", "from": "migration", "to": "profile-store", "fromSide": "right", "toSide": "left" },
+    { "id": "store-json", "from": "profile-store", "to": "profiles-json", "fromSide": "bottom", "toSide": "left", "via": [[1020, 520], [1170, 520], [1170, 560]] },
+    { "id": "store-data", "from": "profile-store", "to": "profile-data" },
+    { "id": "ui-windows", "from": "ui", "to": "windows-os", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "via": [[310, 360], [410, 360], [410, 20], [1280, 20]] }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Verified runtime shape",
+      "items": [
+        "Program.cs:6-37; MainForm.cs:28-60, 157-177; MainViewModel.cs:16-50, 118-181 — entry point, UI wiring, and concrete Store/Service construction are explicit.",
+        "ProfileStore.cs:26-64; README.md:22-26 — state is split between profiles.json metadata and Profiles/<name>/<folder> contents."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Safety and transaction boundaries",
+      "items": [
+        "ProfileStore.cs:26-64, 358-570; FolderTreeService.cs:5-240, 321-455 — JSON/path safety and temporary-copy/quarantine recovery are explicit.",
+        "ProfileManager.cs:143-240; ProfileFolderSetSwitchService.cs:123-172 — profile changes roll back their transaction, while switch failure can remain partial."
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Architecture findings",
+      "items": [
+        "MainForm.cs; MainViewModel.cs; FolderProfileEditorWindow.cs — UI/VM coupling is bidirectional, and UI/VM contain direct filesystem and dialog concerns.",
+        "ProfileStore.cs and FolderTreeService.cs — persistence/security and traversal/copy/recovery responsibilities are concentrated in large classes."
+      ]
+    }
+  ]
+}

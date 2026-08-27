@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "ConfigReplace アプリ起動 Workflow",
+    "output": "configreplace-app-startup-workflow.html",
+    "quality_profile": "showcase",
+    "viewBox": [1100, 466],
+    "views": [
+      {
+        "id": "normal-start",
+        "label": "正常起動",
+        "focus": ["os-start", "program", "mutex", "main-form", "vm-services", "load-migrate", "persist", "ready-ui"],
+        "note": "MainForm 表示前に profiles.json の読み込みと必要な移行を完了します。"
+      },
+      {
+        "id": "stop-conditions",
+        "label": "停止条件",
+        "focus": ["mutex", "already-running", "load-migrate", "load-error"],
+        "note": "多重起動またはロード・移行失敗時は変更操作を有効化しません。"
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "platform", "label": "Windows / Program" },
+    { "id": "ui", "label": "WinForms UI" },
+    { "id": "runtime", "label": "ViewModel / Profiles" }
+  ],
+  "phases": [
+    { "id": "launch", "label": "Launch", "fromCol": 0, "toCol": 1 },
+    { "id": "construct", "label": "Construct", "fromCol": 2, "toCol": 4, "variant": "emphasis" },
+    { "id": "initialize", "label": "Initialize", "fromCol": 5, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "mutex-gate", "label": "Single instance", "lane": "platform", "fromCol": 1, "toCol": 3, "variant": "security" },
+    { "id": "startup-io", "label": "InitializeAsync", "lane": "runtime", "fromCol": 4, "toCol": 5, "variant": "emphasis" },
+    { "id": "fail-closed", "label": "No modification commands", "lane": "platform", "fromCol": 3, "toCol": 5, "variant": "security" }
+  ],
+  "mainPath": ["os-start", "program", "mutex", "main-form", "vm-services", "load-migrate", "ready-ui"],
+  "nodes": [
+    { "id": "os-start", "lane": "platform", "col": 0, "type": "external", "label": "EXE start", "sublabel": "win-x64", "width": 90 },
+    { "id": "program", "lane": "platform", "col": 1, "type": "backend", "label": "Program.Main", "sublabel": "STA; mutex", "width": 96 },
+    { "id": "mutex", "lane": "platform", "col": 3, "type": "security", "label": "Mutex", "sublabel": "base-dir hash", "width": 88 },
+    { "id": "already-running", "lane": "ui", "col": 2, "type": "security", "label": "Exit", "sublabel": "MessageBox", "width": 82 },
+    { "id": "main-form", "lane": "ui", "col": 3, "type": "frontend", "label": "MainForm", "sublabel": "build + wire", "width": 92 },
+    { "id": "vm-services", "lane": "runtime", "col": 3, "type": "backend", "label": "MainViewModel", "sublabel": "construct", "width": 104 },
+    { "id": "load-migrate", "lane": "runtime", "col": 5, "type": "database", "label": "Load/migrate", "sublabel": "JSON + legacy", "width": 96 },
+    { "id": "persist", "lane": "runtime", "col": 2, "type": "database", "label": "SaveAsync", "sublabel": "schema v2", "width": 92 },
+    { "id": "ready-ui", "lane": "ui", "col": 5, "type": "frontend", "label": "Ready UI", "sublabel": "profiles", "width": 88 },
+    { "id": "load-error", "lane": "platform", "col": 5, "type": "security", "label": "Fail closed", "sublabel": "no edits", "width": 94 }
+  ],
+  "edges": [
+    { "id": "launch-program", "from": "os-start", "to": "program", "role": "main", "variant": "emphasis" },
+    { "id": "program-mutex", "from": "program", "to": "mutex", "role": "main", "variant": "security" },
+    { "id": "mutex-main", "from": "mutex", "to": "main-form", "role": "main", "variant": "emphasis" },
+    { "id": "mutex-exit", "from": "mutex", "to": "already-running", "role": "error", "variant": "security", "route": "drop" },
+    { "id": "form-vm", "from": "main-form", "to": "vm-services", "role": "main" },
+    { "id": "vm-load", "from": "vm-services", "to": "load-migrate", "role": "main", "variant": "emphasis" },
+    { "id": "load-persist", "from": "load-migrate", "to": "persist", "label": "changed", "role": "branch", "variant": "dashed", "route": "bottom-channel", "channelY": 425, "fromSide": "bottom", "toSide": "bottom", "labelAt": [470, 425] },
+    { "id": "load-ready", "from": "load-migrate", "to": "ready-ui", "role": "main", "variant": "emphasis", "fromSide": "right", "toSide": "right", "route": "outside-right", "channelX": 690 },
+    { "id": "load-error", "from": "load-migrate", "to": "load-error", "role": "error", "variant": "security", "fromSide": "right", "toSide": "right", "route": "outside-right", "channelX": 720 }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "確認できた起動順序",
+      "items": [
+        "Program.cs:6-37 — STAThread Main が Mutex を取得し、初回プロセスだけ Application.Run(new MainForm()) を実行します。",
+        "MainForm.cs:28-60, 157-177 — UI構築と MainViewModel のイベント接続を行います。",
+        "MainViewModel.cs:16-50, 118-181 — Store、FolderTree、Migration、Manager、SwitchService を生成し、読み込み・移行します。"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "永続化と移行",
+      "items": [
+        "ProfileStore.cs:26-64 — Profiles\\profiles.json を読み込み、JSON を検証します。",
+        "ProfileStorageMigrationService.cs:9-191 — 旧スロットを直接配置形式へ準備し、変更時は schemaVersion=2 で保存します。",
+        "MainViewModel.cs:118-181 — 保存失敗時は移行を Rollback し、変更操作を閉じます。"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "停止条件",
+      "items": [
+        "既存 Mutex は Program.cs:20-24 の MessageBox 後に return し、MainForm を起動しません。",
+        "ロード・移行・保存の例外またはキャンセル時は MainViewModel.cs:158-181 で変更操作を閉じます。"
+      ]
+    }
+  ]
+}

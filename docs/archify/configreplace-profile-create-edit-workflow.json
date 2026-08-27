@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "ConfigReplace プロファイル作成・編集 Workflow",
+    "output": "configreplace-profile-create-edit-workflow.html",
+    "quality_profile": "showcase",
+    "viewBox": [1100, 466],
+    "views": [
+      {
+        "id": "create",
+        "label": "新規作成",
+        "focus": ["editor", "edit-result", "validate", "manager", "stage-copy", "commit", "refresh"],
+        "note": "入力された外部フォルダーをステージングし、新しいプロファイルとして確定します。"
+      },
+      {
+        "id": "edit",
+        "label": "既存編集",
+        "focus": ["editor", "edit-result", "validate", "manager", "stage-copy", "commit", "refresh"],
+        "note": "既存の保存内容または登録元を使い、名前変更を含む更新を行います。"
+      },
+      {
+        "id": "rollback",
+        "label": "失敗時",
+        "focus": ["manager", "stage-copy", "commit", "reject", "rollback"],
+        "note": "入力不備は実行前に拒否し、保存失敗時はディレクトリ変更を戻します。"
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "ui", "label": "User / WinForms UI" },
+    { "id": "orchestration", "label": "ViewModel / ProfileManager" },
+    { "id": "storage", "label": "Staging / Profiles / Recovery" }
+  ],
+  "phases": [
+    { "id": "input", "label": "Input", "fromCol": 0, "toCol": 1 },
+    { "id": "change", "label": "Stage + commit", "fromCol": 2, "toCol": 5, "variant": "emphasis" }
+  ],
+  "groups": [
+    { "id": "manager-operations", "label": "Create / Update", "lane": "orchestration", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "storage-transaction", "label": "Directory + JSON", "lane": "storage", "fromCol": 4, "toCol": 5, "variant": "security" },
+    { "id": "failure-recovery", "label": "Preserve previous state", "lane": "storage", "fromCol": 2, "toCol": 5, "variant": "security" }
+  ],
+  "mainPath": ["editor", "edit-result", "validate", "manager", "stage-copy", "commit", "refresh"],
+  "nodes": [
+    { "id": "editor", "lane": "ui", "col": 0, "type": "frontend", "label": "FolderEditor", "sublabel": "input + D&D", "width": 94, "height": 68 },
+    { "id": "edit-result", "lane": "ui", "col": 1, "type": "frontend", "label": "EditResult", "sublabel": "name + paths", "width": 96, "height": 68 },
+    { "id": "validate", "lane": "orchestration", "col": 2, "type": "security", "label": "VM checks", "sublabel": "name; source", "width": 94, "height": 68 },
+    { "id": "manager", "lane": "orchestration", "col": 3, "type": "backend", "label": "ProfileManager", "sublabel": "Create / Update", "width": 106, "height": 68 },
+    { "id": "stage-copy", "lane": "storage", "col": 4, "type": "backend", "label": "Stage + copy", "sublabel": "temp folder", "width": 96, "height": 68 },
+    { "id": "commit", "lane": "storage", "col": 5, "type": "database", "label": "Store commit", "sublabel": "dir + JSON", "width": 96, "height": 68 },
+    { "id": "refresh", "lane": "ui", "col": 5, "type": "frontend", "label": "Refresh UI", "sublabel": "collections", "width": 94, "height": 68 },
+    { "id": "reject", "lane": "storage", "col": 2, "type": "security", "label": "Reject", "sublabel": "MessageBox", "width": 86, "height": 68 },
+    { "id": "rollback", "lane": "orchestration", "col": 5, "type": "security", "label": "Rollback", "sublabel": "restore old", "width": 92, "height": 68 }
+  ],
+  "edges": [
+    { "id": "editor-result", "from": "editor", "to": "edit-result", "role": "main", "variant": "emphasis" },
+    { "id": "result-validate", "from": "edit-result", "to": "validate", "role": "main" },
+    { "id": "validate-manager", "from": "validate", "to": "manager", "role": "main", "variant": "emphasis" },
+    { "id": "manager-stage", "from": "manager", "to": "stage-copy", "role": "main" },
+    { "id": "stage-commit", "from": "stage-copy", "to": "commit", "role": "main", "variant": "emphasis" },
+    { "id": "commit-refresh", "from": "commit", "to": "refresh", "role": "main", "variant": "emphasis", "fromSide": "right", "toSide": "right", "route": "outside-right", "channelX": 690 },
+    { "id": "validate-reject", "from": "validate", "to": "reject", "role": "error", "variant": "security", "route": "drop" },
+    { "id": "commit-rollback", "from": "commit", "to": "rollback", "role": "error", "variant": "security", "route": "drop" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "入力からサービス呼び出しまで",
+      "items": [
+        "FolderProfileEditorWindow.cs:279-335 — 名前、対象フォルダー、SourcePath を検証し FolderProfileEditResult を返します。",
+        "MainViewModel.cs:183-266, 532-577 — 一意性とパス規則を確認し、ProfileManager.CreateAsync / UpdateAsync を実行します。"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "ステージングと確定",
+      "items": [
+        "ProfileManager.cs:6-90, 143-240 — 一時ディレクトリへ FolderTreeService でコピーし、ProfileStore の取引を確定します。",
+        "ProfileStore.cs:104-202; ProfileManager.cs — staging 後に JSON を保存し、失敗時は sibling backup と取引を Rollback します。"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "失敗時の挙動",
+      "items": [
+        "入力不備や重複名は MainViewModel 側で拒否され、ProfileManager へ進みません。",
+        "FolderTreeService.cs:125-140, 321-455; MainViewModel.cs:204-266 — コピー復旧と UI への失敗通知を行います。"
+      ]
+    }
+  ]
+}

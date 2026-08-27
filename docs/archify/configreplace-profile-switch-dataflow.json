@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "ConfigReplace プロファイル切り替え / 置換 Data Flow",
+    "output": "configreplace-profile-switch-dataflow.html",
+    "quality_profile": "showcase",
+    "viewBox": [1080, 500],
+    "views": [
+      {
+        "id": "preview",
+        "label": "計画と検証",
+        "focus": ["user-action", "vm-command", "selected-profile", "plan", "guards", "errors"],
+        "note": "Preview は配置先を作成せず、プロファイルと配置先の安全性を検証します。"
+      },
+      {
+        "id": "replace",
+        "label": "実行と反映",
+        "focus": ["selected-profile", "plan", "profile-source", "copy-engine", "target", "result"],
+        "note": "プロファイル内の各フォルダーを順番にコピーし、同じ相対パスを置換します。"
+      },
+      {
+        "id": "safety",
+        "label": "安全ガード",
+        "focus": ["guards", "profile-source", "copy-engine", "quarantine", "errors"],
+        "note": "重なり、再解析ポイント、種類競合、キャンセル時の挙動を追います。"
+      }
+    ]
+  },
+  "stages": [
+    { "label": "操作" },
+    { "label": "対象" },
+    { "label": "計画" },
+    { "label": "コピー" },
+    { "label": "結果" }
+  ],
+  "nodes": [
+    { "id": "user-action", "type": "frontend", "label": "Switch button", "sublabel": "Preview / Switch", "stage": 0, "row": 0, "width": 140, "height": 58 },
+    { "id": "vm-command", "type": "backend", "label": "MainViewModel", "sublabel": "command + progress", "stage": 0, "row": 2, "width": 140, "height": 58 },
+    { "id": "selected-profile", "type": "database", "label": "SelectedProfile", "sublabel": "Groups / folders", "stage": 1, "row": 1, "width": 140, "height": 58 },
+    { "id": "plan", "type": "backend", "label": "CreatePlan", "sublabel": "counts + roots", "stage": 2, "row": 0, "width": 140, "height": 58 },
+    { "id": "guards", "type": "security", "label": "Safety guards", "sublabel": "overlap + reparse", "stage": 2, "row": 2, "width": 140, "height": 58 },
+    { "id": "profile-source", "type": "database", "label": "Profile folder", "sublabel": "stored source", "stage": 3, "row": 0, "width": 140, "height": 58 },
+    { "id": "copy-engine", "type": "backend", "label": "Copy tree", "sublabel": "replace by path", "stage": 3, "row": 2, "width": 140, "height": 58 },
+    { "id": "quarantine", "type": "security", "label": "Quarantine", "sublabel": "type conflict", "stage": 3, "row": 1, "width": 140, "height": 58 },
+    { "id": "target", "type": "external", "label": "Target folder", "sublabel": "destination", "stage": 4, "row": 1, "width": 140, "height": 58 },
+    { "id": "result", "type": "frontend", "label": "OperationResult", "sublabel": "status + progress", "stage": 4, "row": 0, "width": 140, "height": 58 },
+    { "id": "errors", "type": "security", "label": "Rejected / partial", "sublabel": "no global rollback", "stage": 4, "row": 2, "width": 140, "height": 58 }
+  ],
+  "flows": [
+    { "id": "action-command", "from": "user-action", "to": "vm-command", "label": "command", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "route": "straight", "labelAt": [100, 270] },
+    { "id": "command-profile", "from": "vm-command", "to": "selected-profile", "label": "profile", "variant": "default" },
+    { "id": "profile-plan", "from": "selected-profile", "to": "plan", "label": "metadata", "variant": "emphasis" },
+    { "id": "plan-guards", "from": "plan", "to": "guards", "label": "validate", "variant": "security", "fromSide": "bottom", "toSide": "top", "route": "straight", "labelAt": [530, 270] },
+    { "id": "guards-source", "from": "guards", "to": "profile-source", "label": "source", "variant": "emphasis" },
+    { "id": "source-copy", "from": "profile-source", "to": "copy-engine", "label": "contents", "variant": "emphasis", "fromSide": "right", "toSide": "top", "via": [[840, 157], [840, 330], [745, 330]], "labelAt": [840, 250] },
+    { "id": "copy-target", "from": "copy-engine", "to": "target", "label": "replace", "variant": "emphasis", "labelAt": [900, 318] },
+    { "id": "copy-quarantine", "from": "copy-engine", "to": "quarantine", "label": "conflict", "variant": "security", "fromSide": "top", "toSide": "bottom", "route": "straight", "labelAt": [745, 315] },
+    { "id": "plan-error", "from": "guards", "to": "errors", "label": "reject", "variant": "security", "fromSide": "bottom", "toSide": "bottom", "route": "bottom-channel", "channelY": 455, "labelAt": [700, 455] },
+    { "id": "target-result", "from": "target", "to": "result", "label": "success", "variant": "default", "fromSide": "top", "toSide": "bottom", "route": "straight" },
+    { "id": "copy-error", "from": "copy-engine", "to": "errors", "label": "partial", "variant": "security", "fromSide": "right", "toSide": "left", "labelAt": [850, 430] },
+    { "id": "error-result", "from": "errors", "to": "result", "label": "failure", "variant": "security", "fromSide": "right", "toSide": "right", "route": "vertical-channel", "channelX": 1055, "labelAt": [1055, 385] }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "計画と実行の境界",
+      "items": [
+        "MainViewModel.cs:351-430 — PreviewSwitchAsync は CreatePlan、SwitchAsync は同計画の ExecuteAsync を呼びます。",
+        "ProfileFolderSetSwitchService.cs:13-172 — 配置先ごとに計画を検証し、各フォルダーを順番に処理します。"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "データとコピーの意味",
+      "items": [
+        "ProfileStore.cs:91-102 — ソースは Profiles\\<profile>\\<folder> の直接配置形式です。",
+        "FolderTreeService.cs:5-240, 321-455 — 同相対パスを一時ファイル経由で置換し、種類競合は退避・復旧します。"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "検証と部分反映",
+      "items": [
+        "ProfileFolderSetSwitchService.cs:174-229 — Profiles との重なり、再解析ポイント、対象の安全性を拒否します。",
+        "MainViewModel.cs:394-430 — キャンセル/I/O 失敗を通知します。全体 Rollback はなく、完了済みフォルダーは残ります。"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "ConfigReplace プロファイル編集から内容を開く Workflow",
+    "output": "configreplace-file-open-workflow.html",
+    "quality_profile": "showcase",
+    "viewBox": [1100, 466],
+    "views": [
+      {
+        "id": "stored-folder",
+        "label": "既存プロファイル",
+        "focus": ["selected-row", "resolve", "stored-path", "exists", "guard", "shell-launcher", "explorer"],
+        "note": "既存行では Profiles/<profile>/<folder> の実体を開きます。"
+      },
+      {
+        "id": "source-folder",
+        "label": "新規登録元",
+        "focus": ["selected-row", "resolve", "source-path", "exists", "guard", "shell-launcher", "explorer"],
+        "note": "未保存行ではドラッグ＆ドロップされた SourcePath を開きます。"
+      },
+      {
+        "id": "scope",
+        "label": "実装スコープ",
+        "focus": ["selected-row", "resolve", "shell-launcher", "explorer", "error"],
+        "note": "確認できるのはフォルダーを Windows Shell で開く経路です。個別ファイル処理は未確認です。"
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "editor", "label": "Profile Editor UI / launcher" },
+    { "id": "path", "label": "Path resolution / state" },
+    { "id": "external", "label": "Stored / source / Windows" }
+  ],
+  "phases": [
+    { "id": "select", "label": "Select", "fromCol": 0, "toCol": 0 },
+    { "id": "resolve-phase", "label": "Resolve", "fromCol": 1, "toCol": 4, "variant": "emphasis" },
+    { "id": "open-phase", "label": "Open", "fromCol": 5, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "path-branches", "label": "Stored or source path", "lane": "path", "fromCol": 1, "toCol": 3, "variant": "emphasis" },
+    { "id": "direct-edit-warning", "label": "Direct edit warning", "lane": "editor", "fromCol": 4, "toCol": 5, "variant": "security" }
+  ],
+  "mainPath": ["selected-row", "resolve", "stored-path", "exists", "guard", "shell-launcher", "explorer", "state"],
+  "nodes": [
+    { "id": "selected-row", "lane": "editor", "col": 0, "type": "frontend", "label": "Selected row", "sublabel": "Open contents", "width": 90, "height": 58 },
+    { "id": "resolve", "lane": "path", "col": 1, "type": "backend", "label": "Resolve", "sublabel": "branch", "width": 70, "height": 58 },
+    { "id": "stored-path", "lane": "external", "col": 2, "type": "database", "label": "Stored folder", "sublabel": "Profiles path", "width": 94, "height": 58 },
+    { "id": "source-path", "lane": "external", "col": 3, "type": "external", "label": "Source", "sublabel": "SourcePath", "width": 78, "height": 58 },
+    { "id": "exists", "lane": "path", "col": 2, "type": "security", "label": "Exists?", "sublabel": "dir check", "width": 70, "height": 58 },
+    { "id": "guard", "lane": "path", "col": 3, "type": "security", "label": "Guard", "sublabel": "confirm", "width": 70, "height": 58 },
+    { "id": "confirm", "lane": "editor", "col": 4, "type": "security", "label": "Warn", "sublabel": "MessageBox", "width": 60, "height": 58 },
+    { "id": "shell-launcher", "lane": "editor", "col": 5, "type": "backend", "label": "Shell launcher", "sublabel": "Process.Start", "width": 100, "height": 58 },
+    { "id": "explorer", "lane": "external", "col": 5, "type": "external", "label": "Explorer", "sublabel": "default", "width": 90, "height": 58 },
+    { "id": "state", "lane": "path", "col": 5, "type": "frontend", "label": "Direct edit", "sublabel": "confirmed", "width": 88, "height": 58 },
+    { "id": "error", "lane": "editor", "col": 2, "type": "security", "label": "Error", "sublabel": "UI error", "width": 70, "height": 58 }
+  ],
+  "edges": [
+    { "id": "row-resolve", "from": "selected-row", "to": "resolve", "role": "main", "variant": "emphasis" },
+    { "id": "resolve-stored", "from": "resolve", "to": "stored-path", "role": "main" },
+    { "id": "resolve-source", "from": "resolve", "to": "source-path", "role": "branch", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "route": "drop" },
+    { "id": "stored-exists", "from": "stored-path", "to": "exists", "role": "main" },
+    { "id": "source-exists", "from": "source-path", "to": "exists", "role": "branch", "fromSide": "top", "toSide": "bottom", "route": "drop" },
+    { "id": "exists-guard", "from": "exists", "to": "guard", "role": "main", "variant": "emphasis" },
+    { "id": "missing-error", "from": "exists", "to": "error", "role": "error", "variant": "security", "fromSide": "top", "toSide": "bottom", "route": "straight" },
+    { "id": "guard-confirm", "from": "guard", "to": "confirm", "role": "branch", "variant": "security", "fromSide": "top", "toSide": "left" },
+    { "id": "guard-launch", "from": "guard", "to": "shell-launcher", "role": "main", "variant": "emphasis", "fromSide": "bottom", "toSide": "right", "via": [[430, 290], [520, 290], [520, 420], [720, 420], [720, 119]] },
+    { "id": "confirm-launch", "from": "confirm", "to": "shell-launcher", "role": "main", "variant": "emphasis" },
+    { "id": "launcher-explorer", "from": "shell-launcher", "to": "explorer", "role": "main", "fromSide": "right", "toSide": "right", "route": "outside-right", "channelX": 708 },
+    { "id": "explorer-state", "from": "explorer", "to": "state", "role": "return", "variant": "emphasis" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "コードで確認できる経路",
+      "items": [
+        "FolderProfileEditorWindow.cs:142-204 — 既存行は ProfileStore.GetProfileFolderPath、新規行は Path.GetFullPath(SourcePath) を使い、Directory.Exists 後に IFolderLauncher.Open を呼びます。",
+        "ProfileStore.cs:85-102; FolderLauncher.cs:5-30 — 実体は Profiles\\<profile>\\<folder> にあり、ShellFolderLauncher が Process.Start(UseShellExecute=true, Verb=open) を実行します。"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "直接編集とエラー",
+      "items": [
+        "FolderProfileEditorWindow.cs:142-187 — 初回警告後 DirectEditConfirmed=true。開いたフォルダーの変更は即時反映され、キャンセル時の復元はありません。",
+        "不存在、ArgumentException、I/O、権限、Win32、InvalidOperation は ShowInputError へ流れます。"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "未確認として扱う範囲",
+      "items": [
+        "確認できるのはフォルダー内容を Windows Shell で開く経路です。ファイル一覧取得、個別ファイル選択、既定エディター起動は調査ソースにありません。"
+      ]
+    }
+  ]
+}
